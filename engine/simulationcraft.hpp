@@ -3894,6 +3894,9 @@ struct player_t : public actor_t
     // 7.0 trinket proxy buffs
     buff_t* incensed;
     buff_t* taste_of_mana; // Gnawed Thumb Ring buff
+    
+    // 7.0 Legendaries
+    buff_t* aggramars_stride;
 
     // 7.1
     buff_t* temptation; // Ring that goes on a 5 minute cd if you use it too much.
@@ -4408,7 +4411,7 @@ struct player_t : public actor_t
       do_update_movement( 9999 );
     else
     {
-      if ( direction == MOVEMENT_BOOMERANG )
+      if ( direction == MOVEMENT_AWAY )
         current.moving_away = distance;
       else
         current.distance_to_move = distance;
@@ -4427,13 +4430,28 @@ struct player_t : public actor_t
     do_update_movement( yards );
 
     if ( sim -> debug )
-      sim -> out_debug.printf( "Player %s movement, direction=%s speed=%f distance_covered=%f to_go=%f duration=%f",
-          name(),
-          util::movement_direction_string( movement_direction() ),
-          composite_movement_speed(),
-          yards,
-          current.distance_to_move,
-          duration.total_seconds() );
+    {
+      if ( current.movement_direction == MOVEMENT_TOWARDS )
+      {
+        sim -> out_debug.printf( "Player %s movement towards target, direction=%s speed=%f distance_covered=%f to_go=%f duration=%f",
+                                 name(),
+                                 util::movement_direction_string( movement_direction() ),
+                                 composite_movement_speed(),
+                                 yards,
+                                 current.distance_to_move,
+                                 duration.total_seconds() );
+      }
+      else
+      {
+        sim -> out_debug.printf( "Player %s movement away from target, direction=%s speed=%f distance_covered=%f to_go=%f duration=%f",
+                                 name(),
+                                 util::movement_direction_string( movement_direction() ),
+                                 composite_movement_speed(),
+                                 yards,
+                                 current.moving_away,
+                                 duration.total_seconds() );
+      }
+    }
   }
 
   // Instant teleport. No overshooting support for now.
@@ -4537,6 +4555,7 @@ private:
       {
         //x_position += yards;
         current.moving_away = 0;
+        current.movement_direction = MOVEMENT_TOWARDS;
         current.distance_to_move -= yards;
       }
     }
@@ -5743,6 +5762,9 @@ public:
   virtual action_energize_e energize_type_() const
   { return energize_type; }
 
+  virtual gain_t* energize_gain( const action_state_t* /* state */ ) const
+  { return gain; }
+
   // ==========================
   // mutating virtual functions
   // ==========================
@@ -6718,6 +6740,10 @@ bool apply_item_bonus( item_t& item, const item_bonus_entry_t& entry );
 
 double curve_point_value( dbc_t& dbc, unsigned curve_id, double point_value );
 bool apply_item_scaling( item_t& item, unsigned scaling_id, unsigned player_level );
+double apply_combat_rating_multiplier( const item_t& item, double amount );
+
+// Return the combat rating multiplier category for item data
+combat_rating_multiplier_type item_combat_rating_type( const item_data_t* data );
 
 struct token_t
 {

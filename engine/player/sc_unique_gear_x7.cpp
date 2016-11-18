@@ -61,6 +61,8 @@ namespace item
   void mrrgrias_favor( special_effect_t& );
   void toe_knees_promise( special_effect_t& );
   void deteriorated_construct_core( special_effect_t& );
+  void eye_of_command( special_effect_t& );
+  void bloodstained_hankerchief( special_effect_t& );
 
   // 7.0 Misc
   void darkmoon_deck( special_effect_t& );
@@ -68,6 +70,7 @@ namespace item
   void sixfeather_fan( special_effect_t& );
   void eyasus_mulligan( special_effect_t& );
   void marfisis_giant_censer( special_effect_t& );
+  void devilsaurs_bite( special_effect_t& );
 
   // 7.0 Raid
   void bloodthirsty_instinct( special_effect_t& );
@@ -79,6 +82,10 @@ namespace item
   void unstable_horrorslime( special_effect_t& );
   void wriggling_sinew( special_effect_t& );
   void bough_of_corruption( special_effect_t& );
+
+  // Legendary
+
+  void aggramars_stride( special_effect_t& );
 
 
 
@@ -98,6 +105,28 @@ namespace item
   vial_of_nightmare_fog
   heightened_senses
   */
+}
+
+namespace util
+{
+// Return the Karazhan Chest empowerment multiplier (as 1.0 + multiplier) for trinkets, or 1.0 if
+// the chest is not found on the actor.
+double composite_karazhan_empower_multiplier( const player_t* player )
+{
+  auto it = range::find_if( player -> items, []( const item_t& item ) {
+    return item.name_str ==  "robes_of_the_ancient_chronicle" ||
+           item.name_str ==  "harness_of_smoldering_betrayal" ||
+           item.name_str ==  "hauberk_of_warped_intuition"    ||
+           item.name_str ==  "chestplate_of_impenetrable_darkness";
+  } );
+
+  if ( it != player -> items.end() )
+  {
+    return 1.0 + player -> find_spell( 231626 ) -> effectN( 1 ).percent();
+  }
+
+  return 1.0;
+}
 }
 
 namespace set_bonus
@@ -368,16 +397,8 @@ struct volatile_energy_t : public spell_t
     background = may_crit = true;
     callbacks = false;
     item = effect.item;
-    base_dd_min = base_dd_max = effect.driver() -> effectN( 1 ).average( effect.item );
-    for ( const auto& item : effect.player -> items )
-    {
-      if ( item.name_str ==  "robes_of_the_ancient_chronicle" ||
-           item.name_str ==  "harness_of_smoldering_betrayal" ||
-           item.name_str ==  "hauberk_of_warped_intuition"    ||
-           item.name_str ==  "chestplate_of_impenetrable_darkness" )
-        //FIXME: Don't hardcode the 30% damage bonus
-        base_dd_min = base_dd_max = effect.driver() -> effectN( 1 ).average( effect.item ) * 1.3;
-    }
+    base_dd_min = base_dd_max = effect.driver() -> effectN( 1 ).average( effect.item ) *
+                                util::composite_karazhan_empower_multiplier( effect.player );
     aoe = -1;
   }
 };
@@ -399,6 +420,75 @@ void item::deteriorated_construct_core( special_effect_t& effect )
   effect.proc_flags2_= PF2_ALL_HIT;
 
   new dbc_proc_callback_t( effect.player, effect );
+}
+
+// Eye of Command ===========================================================
+
+struct eye_of_command_cb_t : public dbc_proc_callback_t
+{
+  player_t* current_target;
+  buff_t*   buff;
+
+  eye_of_command_cb_t( const special_effect_t& effect, buff_t* b ) :
+    dbc_proc_callback_t( effect.item, effect ),
+    current_target( nullptr ), buff( b )
+  { }
+
+  void execute( action_t* /* a */, action_state_t* state ) override
+  {
+    if ( current_target != state -> target )
+    {
+      if ( current_target != nullptr && listener -> sim -> debug )
+      {
+        listener -> sim -> out_debug.printf( "%s eye_of_command target reset, old=%s new=%s",
+          listener -> name(), current_target -> name(), state -> target -> name() );
+      }
+      buff -> expire();
+      current_target = state -> target;
+    }
+
+    buff -> trigger();
+  }
+};
+
+// TODO: Autoattacks don't really change targets currently in simc, so this code is for future
+// reference.
+void item::eye_of_command( special_effect_t& effect )
+{
+  auto amount = effect.trigger() -> effectN( 1 ).average( effect.item ) *
+                util::composite_karazhan_empower_multiplier( effect.player );
+
+  stat_buff_t* b = debug_cast<stat_buff_t*>( buff_t::find( effect.player, "legions_gaze" ) );
+  if ( ! b )
+  {
+    b = stat_buff_creator_t( effect.player, "legions_gaze", effect.trigger(), effect.item )
+        .add_stat( STAT_CRIT_RATING, amount );
+  }
+
+  effect.custom_buff = b;
+
+  new eye_of_command_cb_t( effect, b );
+}
+
+// Bloodstained Hankerchief =================================================
+
+// Note, custom implementations are going to have to apply the empower multiplier independent of
+// this function.
+void item::bloodstained_hankerchief( special_effect_t& effect )
+{
+  action_t* a = effect.player -> find_action( "cruel_garrote" );
+  if ( ! a )
+  {
+    a = effect.player -> create_proc_action( "cruel_garrote", effect );
+  }
+
+  if ( ! a )
+  {
+    a = effect.create_action();
+    a -> base_td *= util::composite_karazhan_empower_multiplier( effect.player );
+  }
+
+  effect.execute_action = a;
 }
 
 // Impact Tremor ============================================================
@@ -427,27 +517,41 @@ struct thunder_ritual_impact_t : public spell_t
 {
   //TODO: Are these multipliers multiplicative with one another or should they be added together then applied?
   // Right now we assume they are independant multipliers.
-  double paired_multiplier;
+
+  // Note: Mrrgria's Favor and Toe Knee's Promise interact to buff eachother by 30% when the other is present.
+  // However, their cooldowns are not equal, so we cannot simply treat this as a 30% permanant modifier.
+  // Instead, if we are modeling having the trinkets paired, we give mrrgria's favor an ICD event that does
+  // not effect ready() state, but instead controls the application of the 30% multiplier.
+
+  bool pair_multiplied;
   double chest_multiplier;
+  cooldown_t* pair_icd;
+
   thunder_ritual_impact_t( const special_effect_t& effect ) :
     spell_t( "thunder_ritual_damage", effect.player, effect.driver() -> effectN( 1 ).trigger() ),
-    paired_multiplier( 1.0 ),
-    chest_multiplier( 1.0 )
+    pair_multiplied( false ),
+    chest_multiplier( util::composite_karazhan_empower_multiplier( effect.player ) )
   {
     background = may_crit = true;
     callbacks = false;
-    for ( const auto& item : effect.player -> items )
-    {
-      if ( item.name_str ==  "robes_of_the_ancient_chronicle" ||
-           item.name_str ==  "harness_of_smoldering_betrayal" ||
-           item.name_str ==  "hauberk_of_warped_intuition"    ||
-           item.name_str ==  "chestplate_of_impenetrable_darkness" )
-        //FIXME: Don't hardcode the 30% damage bonus
-        chest_multiplier += 0.3;
-    }
     if ( player -> karazhan_trinkets_paired )
-      paired_multiplier += 0.3;
-    base_dd_min = base_dd_max = data().effectN( 1 ).average( effect.item ) * paired_multiplier * chest_multiplier;
+    {
+      pair_icd = effect.player -> get_cooldown( "paired_trinket_icd" );
+      pair_icd -> duration = timespan_t::from_seconds( 60.0 );
+      pair_multiplied = true;
+    }
+    base_dd_min = base_dd_max = data().effectN( 1 ).average( effect.item ) * chest_multiplier;
+  }
+
+  double action_multiplier() const override
+  {
+    double am = spell_t::action_multiplier();
+    if ( pair_icd -> up() )
+    {
+      am *= 1.3;
+      pair_icd -> start();
+    }
+    return am;
   }
 };
 
@@ -528,22 +632,13 @@ struct flame_gale_pulse_t : spell_t
   double paired_multiplier;
   flame_gale_pulse_t( special_effect_t& effect ) :
     spell_t( "flame_gale_pulse", effect.player, effect.player -> find_spell( 230213 ) ),
-    chest_multiplier( 1.0 ),
+    chest_multiplier( util::composite_karazhan_empower_multiplier( effect.player ) ),
     paired_multiplier( 1.0 )
   {
     background = true;
     callbacks = false;
     school = SCHOOL_FIRE;
     aoe = -1;
-    for ( const auto& item : effect.player -> items )
-    {
-      if ( item.name_str ==  "robes_of_the_ancient_chronicle" ||
-           item.name_str ==  "harness_of_smoldering_betrayal" ||
-           item.name_str ==  "hauberk_of_warped_intuition"    ||
-           item.name_str ==  "chestplate_of_impenetrable_darkness" )
-        //FIXME: Don't hardcode the 30% damage bonus
-        chest_multiplier += 0.3;
-    }
     if ( player -> karazhan_trinkets_paired )
       paired_multiplier += 0.3;
     base_dd_min = base_dd_max = data().effectN( 2 ).average( effect.item ) * paired_multiplier * chest_multiplier;
@@ -611,8 +706,8 @@ struct memento_callback_t : public dbc_proc_callback_t
 
 void item::memento_of_angerboda( special_effect_t& effect )
 {
-  double rating_amount = effect.driver() -> effectN( 2 ).average( effect.item );
-  rating_amount *= effect.item -> sim -> dbc.combat_rating_multiplier( effect.item -> item_level() );
+  double rating_amount = item_database::apply_combat_rating_multiplier( *effect.item,
+      effect.driver() -> effectN( 2 ).average( effect.item ) );
 
   std::vector<buff_t*> buffs;
 
@@ -1686,8 +1781,8 @@ struct natures_call_callback_t : public dbc_proc_callback_t
 
 void item::natures_call( special_effect_t& effect )
 {
-  double rating_amount = effect.driver() -> effectN( 2 ).average( effect.item );
-  rating_amount *= effect.item -> sim -> dbc.combat_rating_multiplier( effect.item -> item_level() );
+  double rating_amount = item_database::apply_combat_rating_multiplier( *effect.item,
+      effect.driver() -> effectN( 2 ).average( effect.item ) );
 
   std::vector<natures_call_proc_t*> procs;
 
@@ -2063,6 +2158,19 @@ void item::marfisis_giant_censer( special_effect_t& effect )
   effect.custom_buff = effect.player -> buffs.incensed;
 
   new dbc_proc_callback_t( effect.player, effect );
+}
+
+// Devilsaur's Bite =========================================================
+
+void item::devilsaurs_bite( special_effect_t& effect )
+{
+  auto a = effect.create_action();
+  // Devilsaur's bite ignores armor
+  a -> snapshot_flags &= ~STATE_TGT_ARMOR;
+
+  effect.execute_action = a;
+
+  new dbc_proc_callback_t( effect.item, effect );
 }
 
 // Spontaneous Appendages ===================================================
@@ -2815,9 +2923,9 @@ void set_bonus::journey_through_time( special_effect_t& effect )
     return;
   }
 
-  auto base_value = e -> trigger() -> effectN( 1 ).average( e -> item );
   // Apply legion Combat rating penalty to the effect
-  base_value *= effect.player -> dbc.combat_rating_multiplier( e -> item -> item_level() );
+  auto base_value = item_database::apply_combat_rating_multiplier( *e -> item,
+    e -> trigger() -> effectN( 1 ).average( e -> item ) );
   // And presume that the extra 1k haste is not penalized as it's not strictly sourced from an item
   base_value += effect.driver() -> effectN( 2 ).average( effect.player );
 
@@ -3004,6 +3112,16 @@ void item::sixfeather_fan( special_effect_t& effect )
   new wind_bolt_callback_t( effect.item, effect, bolt );
 }
 
+// Aggramars Speed Boots ====================================================
+
+void item::aggramars_stride( special_effect_t& effect )
+{
+  effect.custom_buff = buff_creator_t( effect.player, "aggramars_stride", effect.driver(), effect.item )
+    .default_value( effect.driver() -> effectN( 1 ).percent() );
+
+  effect.player -> buffs.aggramars_stride = effect.custom_buff;
+}
+
 // Eyasu's Mulligan =========================================================
 
 struct eyasus_driver_t : public spell_t
@@ -3025,8 +3143,8 @@ struct eyasus_driver_t : public spell_t
     base_tick_time = data().duration();
     dot_duration = data().duration();
 
-    double amount = effect.driver() -> effectN( 1 ).average( effect.item );
-    amount *= effect.item -> sim -> dbc.combat_rating_multiplier( effect.item -> item_level() );
+    double amount = item_database::apply_combat_rating_multiplier( *effect.item,
+      effect.driver() -> effectN( 1 ).average( effect.item ) );
 
     // Initialize stat buffs
     stat_buffs[ 0 ] = stat_buff_creator_t( effect.player, "lethal_on_board",
@@ -3154,6 +3272,8 @@ void unique_gear::register_special_effects_x7()
   register_special_effect( 230222, item::mrrgrias_favor                 );
   register_special_effect( 231952, item::toe_knees_promise              );
   register_special_effect( 230236, item::deteriorated_construct_core    );
+  register_special_effect( 230150, item::eye_of_command                 );
+  register_special_effect( 230011, item::bloodstained_hankerchief       );
 
   /* Legion 7.0 Raid */
   // register_special_effect( 221786, item::bloodthirsty_instinct  );
@@ -3175,6 +3295,7 @@ void unique_gear::register_special_effects_x7()
   register_special_effect( 227868, item::sixfeather_fan                 );
   register_special_effect( 227388, item::eyasus_mulligan                );
   register_special_effect( 228141, item::marfisis_giant_censer          );
+  register_special_effect( 224073, item::devilsaurs_bite                );
 
   /* Legion Enchants */
   register_special_effect( 190888, "190909trigger" );
@@ -3198,6 +3319,7 @@ void unique_gear::register_special_effects_x7()
 
   /* Legendaries */
   register_special_effect( 207692, cinidaria_the_symbiote_t() );
+  register_special_effect( 207438, item::aggramars_stride );
 
   /* Consumables */
   register_special_effect( 188028, consumable::potion_of_the_old_war );

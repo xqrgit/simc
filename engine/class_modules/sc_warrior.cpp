@@ -79,7 +79,7 @@ struct counter_t
 struct warrior_t: public player_t
 {
 public:
-  event_t* heroic_charge, *rampage_driver, *execute_sweeping_strike;
+  event_t* heroic_charge, *rampage_driver;
   std::vector<attack_t*> rampage_attacks;
   std::vector<cooldown_t*> odyns_champion_cds;
   bool non_dps_mechanics, warrior_fixed_time, frothing_may_trigger, opportunity_strikes_once,
@@ -107,6 +107,7 @@ public:
     action_t* opportunity_strikes;
     action_t* trauma;
     action_t* scales_of_earth;
+    action_t* charge;
   } active;
 
   // Buffs
@@ -140,6 +141,7 @@ public:
     buff_t* ignore_pain;
     buff_t* intercept_movement;
     buff_t* intervene_movement;
+    buff_t* into_the_fray;
     buff_t* juggernaut;
     buff_t* last_stand;
     buff_t* massacre;
@@ -352,7 +354,7 @@ public:
     const spell_data_t* focused_rage;
     const spell_data_t* frenzy;
     const spell_data_t* inner_rage;
-    const spell_data_t* into_the_fray; // NYI
+    const spell_data_t* into_the_fray;
     const spell_data_t* titanic_might;
     const spell_data_t* trauma;
     const spell_data_t* vengeance;
@@ -435,7 +437,6 @@ public:
     player_t( sim, WARRIOR, name, r ),
     heroic_charge( nullptr ),
     rampage_driver( nullptr ),
-    execute_sweeping_strike( nullptr ),
     rampage_attacks( 0 ),
     active( active_t() ),
     buff( buffs_t() ),
@@ -514,14 +515,15 @@ public:
   void      init_action_list() override;
 
   action_t*  create_action( const std::string& name, const std::string& options ) override;
+  bool       create_actions();
   resource_e primary_resource() const override { return RESOURCE_RAGE; }
   role_e     primary_role() const override;
   stat_e     convert_hybrid_stat( stat_e s ) const override;
   void       assess_damage_imminent_pre_absorb( school_e, dmg_e, action_state_t* s ) override;
   void       assess_damage_imminent( school_e, dmg_e, action_state_t* s ) override;
-  void       assess_damage( school_e, dmg_e, action_state_t* s ) override;
+  void       target_mitigation( school_e, dmg_e, action_state_t* ) override;
   void       copy_from( player_t* source ) override;
-  void      merge( player_t& other ) override;
+  void       merge( player_t& other ) override;
 
   void     datacollection_begin() override;
   void     datacollection_end() override;
@@ -604,7 +606,7 @@ public:
   {
     ab::may_crit = true;
     tactician_per_rage += ( player -> spec.tactician -> effectN( 2 ).percent() / 100  );
-    tactician_per_rage *= 1.0 + player -> artifact.exploit_the_weakness.percent() ;
+    tactician_per_rage *= 1.0 + player -> artifact.exploit_the_weakness.percent();
     arms_t19_4p_chance = p() -> sets.set( WARRIOR_ARMS, T19, B4 ) -> effectN( 1 ).percent();
   }
 
@@ -1473,6 +1475,8 @@ struct charge_t: public warrior_attack_t
       cooldown -> charges += p -> talents.double_time -> effectN( 1 ).base_value();
       cooldown -> duration += p -> talents.double_time -> effectN( 2 ).time_value();
     }
+    p -> cooldown.charge = cooldown;
+    p -> active.charge = this;
   }
 
   void execute() override
@@ -1844,30 +1848,110 @@ struct dragon_roar_t: public warrior_attack_t
   double composite_crit_chance() const override { return 1.0; }
 };
 
-// Execute ==================================================================
+// Arms Execute ==================================================================
 
 struct execute_sweep_t: public warrior_attack_t
 {
-  double original;
-  bool free;
-  execute_sweep_t( warrior_t* p, double original_cost, bool was_it_free ):
-    warrior_attack_t( "execute", p, p -> spec.execute ), original( original_cost ), free( was_it_free )
+  double dmg_mult;
+  execute_sweep_t( warrior_t* p ):
+    warrior_attack_t( "execute_sweep", p, p -> spec.execute ), dmg_mult( 0 )
   {
     weapon = &( p -> main_hand_weapon );
-
     base_crit += p -> artifact.deathblow.percent();
-    base_crit += p -> artifact.deathdealer.percent();
-    energize_amount = 0;
+  }
+
+  double action_multiplier() const override
+  {
+    return dmg_mult;
+  }
+
+  double cost() const override
+  {
+    return 0;
+  }
+
+  void impact( action_state_t* s ) override
+  {
+    warrior_attack_t::impact( s );
+
+    if ( s -> result == RESULT_CRIT )
+    {
+      arms_t19_4p();
+    }
+  }
+};
+
+struct sweeping_execute_t: public event_t
+{
+  timespan_t duration;
+  player_t* original_target;
+  warrior_t* warrior;
+  execute_sweep_t* execute_sweeping_strike;
+  sweeping_execute_t( warrior_t*p, player_t* target, execute_sweep_t* execute_ss ):
+    event_t( *p -> sim, next_execute() ), original_target( target ), warrior( p ), execute_sweeping_strike( execute_ss )
+  {
+    duration = next_execute();
+  }
+
+  static timespan_t next_execute()
+  {
+    return timespan_t::from_millis( 250 );
+  }
+
+  void execute() override
+  {
+    player_t* new_target = nullptr;
+    execute_sweeping_strike -> available_targets( execute_sweeping_strike -> target_cache.list );
+    // Gotta find a target for this bastard to hit. Also if the target dies in the 0.5 seconds between the original execute and this, we don't want to continue.
+    for ( size_t i = 0; i < execute_sweeping_strike -> target_cache.list.size(); ++i )
+    {
+      if ( execute_sweeping_strike -> target_cache.list[i] == original_target )
+        continue;
+      new_target = execute_sweeping_strike -> target_cache.list[i];
+      break;
+    }
+    if ( new_target )
+    {
+      execute_sweeping_strike -> target = new_target;
+      execute_sweeping_strike -> execute();
+    }
+  }
+};
+
+struct execute_arms_t: public warrior_attack_t
+{
+  execute_sweep_t* execute_sweeping_strike;
+  double max_rage;
+  execute_arms_t( warrior_t* p, const std::string& options_str ):
+    warrior_attack_t( "execute", p, p -> spec.execute ), execute_sweeping_strike( nullptr ),
+    max_rage( 0 )
+  {
+    parse_options( options_str );
+    weapon = &( p -> main_hand_weapon );
+    
+    base_crit += p -> artifact.deathblow.percent();
+    max_rage = p -> talents.dauntless -> ok() ? 32 : 40;
+    if ( p -> talents.sweeping_strikes -> ok() )
+    {
+      execute_sweeping_strike = new execute_sweep_t( p );
+      add_child( execute_sweeping_strike );
+    }
   }
 
   double action_multiplier() const override
   {
     double am = warrior_attack_t::action_multiplier();
 
-    if ( p() -> mastery.colossal_might -> ok() )
+    if ( is_it_free() )
     {
-      am *= 4.0 * ( std::min( 40.0, ( free ? 40.0 : original ) ) / 40 );
+      am *= 4.0;
     }
+    else
+    {
+      double temp_max_rage = max_rage * ( 1.0 + p() -> buff.precise_strikes -> check_value() );
+      am *= 4.0 * ( std::min( temp_max_rage, p() -> resources.current[RESOURCE_RAGE] ) / temp_max_rage );
+    }
+    if ( execute_sweeping_strike ) execute_sweeping_strike -> dmg_mult = am; // The sweeping strike deals damage based on the action multiplier of the original attack before shattered defenses. 
 
     am *= 1.0 + p() -> buff.shattered_defenses -> stack_value();
 
@@ -1886,15 +1970,73 @@ struct execute_sweep_t: public warrior_attack_t
     return cc;
   }
 
+  double tactician_cost() const override
+  {
+    double c = 40;
+
+    if ( !is_it_free() )
+    {
+      double temp_max_rage = max_rage * ( 1.0 + p() -> buff.precise_strikes -> check_value() );
+      c = std::min( temp_max_rage, p() -> resources.current[RESOURCE_RAGE] );
+      c = ( c / temp_max_rage ) * 40;
+    }
+
+    if ( sim -> log )
+    {
+      sim -> out_debug.printf( "Rage used to calculate tactician chance from ability %s: %4.4f, actual rage used: %4.4f",
+                               name(),
+                               c,
+                               cost() );
+    }
+
+    return c;
+  }
+
+  bool is_it_free() const
+  {
+    return ( p() -> buff.ayalas_stone_heart -> up() || p() -> buff.battle_cry_deadly_calm -> up() );
+  }
+
+
   double cost() const override
   {
-    return 0;
+    double c = warrior_attack_t::cost();
+
+    if ( p() -> buff.ayalas_stone_heart -> check() )
+    {
+      return c *= 1.0 + p() -> buff.ayalas_stone_heart -> data().effectN( 2 ).percent();
+    }
+
+    if ( p() -> buff.battle_cry_deadly_calm -> check() )
+    {
+      return c *= 1.0 + p() -> talents.deadly_calm  -> effectN( 1 ).percent();
+    }
+
+    if ( p() -> mastery.colossal_might -> ok() )
+    {
+      double temp_max_rage = max_rage * ( 1.0 + p() -> buff.precise_strikes -> check_value() );
+      c *= 1.0 + p() -> buff.precise_strikes -> check_value();
+      c = std::min( temp_max_rage, std::max( p() -> resources.current[RESOURCE_RAGE], c ) );
+    }
+
+    return c;
   }
 
   void execute() override
   {
     warrior_attack_t::execute();
-    p() -> execute_sweeping_strike = nullptr;
+    
+
+    if ( execute_sweeping_strike )
+    {
+      make_event<sweeping_execute_t>( *sim, p(),
+                                      execute_state -> target,
+                                      execute_sweeping_strike );
+    }
+
+    p() -> buff.shattered_defenses -> expire();
+    p() -> buff.precise_strikes -> expire();
+    p() -> buff.ayalas_stone_heart -> expire();
   }
 
   void impact( action_state_t* s ) override
@@ -1906,48 +2048,33 @@ struct execute_sweep_t: public warrior_attack_t
       arms_t19_4p();
     }
   }
-};
 
-struct sweeping_execute_t: public event_t
-{
-  timespan_t duration;
-  execute_sweep_t* execute_sweep;
-  player_t* original_target;
-  warrior_t* warrior;
-  sweeping_execute_t( warrior_t*p, double cost, bool free, player_t* target ):
-    event_t( *p -> sim, next_execute() ), execute_sweep( nullptr ), original_target( target ), warrior( p )
+  bool ready() override
   {
-    duration = next_execute();
-    execute_sweep = new execute_sweep_t( p, cost, free );
-  }
-
-  static timespan_t next_execute()
-  {
-    return timespan_t::from_millis( 500 );
-  }
-
-  void execute() override
-  {
-    player_t* new_target = nullptr;
-    // Gotta find a target for this bastard to hit. Also if the target dies in the 0.5 seconds between the original execute and this, we don't want to continue.
-    for ( size_t i = 0; execute_sweep -> target_cache.list.size() <= i; ++i )
+    if ( p() -> main_hand_weapon.type == WEAPON_NONE )
     {
-      if ( execute_sweep -> target_cache.list[i] == original_target )
-        continue;
-      new_target = execute_sweep -> target_cache.list[i];
-      break;
+      return false;
     }
-    if ( new_target )
+
+    if ( p() -> buff.ayalas_stone_heart -> check() )
     {
-      execute_sweep -> target = new_target;
-      execute_sweep -> execute();
+      return warrior_attack_t::ready();
+    }
+
+    // Call warrior_attack_t::ready() first for proper targeting support.
+    if ( warrior_attack_t::ready() && target -> health_percentage() <= 20 )
+    {
+      return true;
     }
     else
     {
-      warrior -> execute_sweeping_strike = nullptr;
+      return false;
     }
   }
 };
+
+
+// Fury Execute ======================================================================
 
 struct execute_off_hand_t: public warrior_attack_t
 {
@@ -1994,97 +2121,32 @@ struct execute_off_hand_t: public warrior_attack_t
 struct execute_t: public warrior_attack_t
 {
   execute_off_hand_t* oh_attack;
-  double max_rage;
   execute_t( warrior_t* p, const std::string& options_str ):
-    warrior_attack_t( "execute", p, p -> spec.execute ), oh_attack( nullptr ),
-    max_rage( 0 )
+    warrior_attack_t( "execute", p, p -> spec.execute ), oh_attack( nullptr )
   {
     parse_options( options_str );
     weapon = &( p -> main_hand_weapon );
 
-    if ( p -> specialization() == WARRIOR_FURY )
+    oh_attack = new execute_off_hand_t( p, "execute_offhand", p -> find_spell( 163558 ) );
+    add_child( oh_attack );
+    if ( p -> main_hand_weapon.group() == WEAPON_1H &&
+         p -> off_hand_weapon.group() == WEAPON_1H )
     {
-      oh_attack = new execute_off_hand_t( p, "execute_offhand", p -> find_spell( 163558 ) );
-      add_child( oh_attack );
-      if ( p -> main_hand_weapon.group() == WEAPON_1H &&
-           p -> off_hand_weapon.group() == WEAPON_1H )
-      {
-        weapon_multiplier *= 1.0 + p -> spec.singleminded_fury -> effectN( 3 ).percent();
-      }
-      weapon_multiplier *= 1.0 + p -> spec.execute_2 -> effectN( 1 ).percent();
+      weapon_multiplier *= 1.0 + p -> spec.singleminded_fury -> effectN( 3 ).percent();
     }
+    weapon_multiplier *= 1.0 + p -> spec.execute_2 -> effectN( 1 ).percent();
 
-    base_crit += p -> artifact.deathblow.percent();
     base_crit += p -> artifact.deathdealer.percent();
-    energize_amount = 0;
-    max_rage = p -> talents.dauntless -> ok() ? 32 : 40;
   }
 
   double action_multiplier() const override
   {
     double am = warrior_attack_t::action_multiplier();
 
-    if ( p() -> mastery.colossal_might -> ok() )
-    {
-      if ( is_it_free() )
-      {
-        am *= 4.0;
-      }
-      else
-      {
-        double temp_max_rage = max_rage * ( 1.0 + p() -> buff.precise_strikes -> check_value() );
-        am *= 4.0 * ( std::min( temp_max_rage, p() -> resources.current[RESOURCE_RAGE] ) / temp_max_rage );
-      }
-    }
-    else if ( p() -> has_shield_equipped() )
-    { am *= 1.0 + p() -> spec.protection -> effectN( 2 ).percent(); }
-
-    am *= 1.0 + p() -> buff.shattered_defenses -> stack_value();
-
     am *= 1.0 + p() -> buff.juggernaut -> stack_value();
 
     return am;
   }
-
-  double composite_crit_chance() const override
-  {
-    double cc = warrior_attack_t::composite_crit_chance();
-
-    if ( p() -> buff.shattered_defenses -> check() )
-    {
-      cc += p() -> buff.shattered_defenses -> data().effectN( 2 ).percent();
-    }
-
-    return cc;
-  }
-
-  double tactician_cost() const override
-  {
-    double c = 40;
-
-    if ( !is_it_free() )
-    {
-      double temp_max_rage = max_rage * ( 1.0 + p() -> buff.precise_strikes -> check_value() );
-      c = std::min( temp_max_rage, p() -> resources.current[RESOURCE_RAGE] );
-      c = ( c / temp_max_rage ) * 40;
-    }
-
-    if ( sim -> log )
-    {
-      sim -> out_debug.printf( "Rage used to calculate tactician chance from ability %s: %4.4f, actual rage used: %4.4f",
-                                   name(),
-                                   c,
-                                   cost() );
-    }
-
-    return c;
-  }
-
-  bool is_it_free() const
-  {
-    return ( p() -> buff.ayalas_stone_heart -> up() || p() -> buff.battle_cry_deadly_calm -> up() );
-  }
-
 
   double cost() const override
   {
@@ -2095,18 +2157,7 @@ struct execute_t: public warrior_attack_t
       return c *= 1.0 + p() -> buff.ayalas_stone_heart -> data().effectN( 2 ).percent();
     }
 
-    if ( p() -> buff.battle_cry_deadly_calm -> check() )
-    {
-      return c *= 1.0 + p() -> talents.deadly_calm  -> effectN( 1 ).percent();
-    }
-
-    if ( p() -> mastery.colossal_might -> ok() ) // Arms
-    {
-      double temp_max_rage = max_rage * ( 1.0 + p() -> buff.precise_strikes -> check_value() );
-      c *= 1.0 + p() -> buff.precise_strikes -> check_value();
-      c = std::min( temp_max_rage, std::max( p() -> resources.current[RESOURCE_RAGE], c ) );
-    }
-    else if ( p() -> buff.sense_death -> check() ) // Fury
+    if ( p() -> buff.sense_death -> check() )
     {
       c *= 1.0 + p() -> buff.sense_death -> data().effectN( 1 ).percent();
     }
@@ -2129,17 +2180,7 @@ struct execute_t: public warrior_attack_t
          p() -> off_hand_weapon.type != WEAPON_NONE ) // If MH fails to land, or if there is no OH weapon for Fury, oh attack does not execute.
       oh_attack -> execute();
 
-    p() -> buff.shattered_defenses -> expire();
-    p() -> buff.precise_strikes -> expire();
     p() -> buff.juggernaut -> trigger( 1 );
-
-    if ( p() -> talents.sweeping_strikes -> ok() && target_cache.list.size() > 1 )
-    {
-      p() -> execute_sweeping_strike = make_event<sweeping_execute_t>( *sim, p(),
-                                                                        resource_consumed,
-                                                                        p() -> buff.ayalas_stone_heart -> up(),
-                                                                        execute_state -> target );
-    }
     p() -> buff.ayalas_stone_heart -> expire();
   }
 
@@ -2150,7 +2191,6 @@ struct execute_t: public warrior_attack_t
     if ( s -> result == RESULT_CRIT )
     {
       p() -> buff.massacre -> trigger();
-      arms_t19_4p();
       if ( p() -> execute_enrage && p() -> specialization() == WARRIOR_FURY )
       {
         p() -> enrage();
@@ -2498,15 +2538,16 @@ struct heroic_charge_movement_ticker_t: public event_t
 
 struct heroic_charge_t: public warrior_attack_t
 {
-  action_t*leap;
+  heroic_leap_t* leap;
   heroic_charge_t( warrior_t* p, const std::string& options_str ):
-    warrior_attack_t( "heroic_charge", p, spell_data_t::nil() )
+    warrior_attack_t( "heroic_charge", p, spell_data_t::nil() ), leap( nullptr )
   {
     parse_options( options_str );
-    leap = new heroic_leap_t( p, options_str );
+    leap = new heroic_leap_t( p, "" );
     trigger_gcd = timespan_t::zero();
     ignore_false_positive = true;
-    callbacks = may_crit = false;
+    callbacks = may_crit = may_hit = false;
+    p -> active.charge -> use_off_gcd = true;
   }
 
   void execute() override
@@ -2521,12 +2562,12 @@ struct heroic_charge_t: public warrior_attack_t
       speed = 10 / ( p() -> base_movement_speed * ( 1 + p() -> passive_movement_modifier() ) ) / 0.5;
       p() -> buff.heroic_leap_movement -> trigger( 1, speed, 1, timespan_t::from_millis( 500 ) );
       leap -> execute();
-      p() -> trigger_movement( 10.0, MOVEMENT_BOOMERANG ); // Leap 10 yards out, because it's impossible to precisely land 8 yards away.
+      p() -> trigger_movement( 10.0, MOVEMENT_AWAY ); // Leap 10 yards out, because it's impossible to precisely land 8 yards away.
       p() -> heroic_charge = make_event<heroic_charge_movement_ticker_t>( *sim, *sim, p() );
     }
     else
     {
-      p() -> trigger_movement( 9.0, MOVEMENT_BOOMERANG );
+      p() -> trigger_movement( 9.0, MOVEMENT_AWAY );
       p() -> heroic_charge = make_event<heroic_charge_movement_ticker_t>( *sim, *sim, p() );
     }
   }
@@ -4261,7 +4302,12 @@ action_t* warrior_t::create_action( const std::string& name,
   if ( name == "die_by_the_sword"     ) return new die_by_the_sword_t     ( this, options_str );
   if ( name == "dragon_roar"          ) return new dragon_roar_t          ( this, options_str );
   if ( name == "enraged_regeneration" ) return new enraged_regeneration_t ( this, options_str );
-  if ( name == "execute"              ) return new execute_t              ( this, options_str );
+  if ( name == "execute" )
+  {
+    if ( specialization() == WARRIOR_ARMS )
+    { return new execute_arms_t( this, options_str ); }
+    else { return new execute_t( this, options_str ); }
+  }
   if ( name == "focused_rage"         ) return new focused_rage_t         ( this, options_str );
   if ( name == "furious_slash"        ) return new furious_slash_t        ( this, options_str );
   if ( name == "hamstring"            ) return new hamstring_t            ( this, options_str );
@@ -4402,7 +4448,7 @@ void warrior_t::init_spells()
   talents.in_for_the_kill       = find_talent_spell( "In For The Kill" );
   talents.indomitable           = find_talent_spell( "Indomitable" );
   talents.inner_rage            = find_talent_spell( "Inner Rage" );
-  talents.into_the_fray         = find_talent_spell( "Into The Fray" );
+  talents.into_the_fray         = find_talent_spell( "Into the Fray" );
   talents.massacre              = find_talent_spell( "Massacre" );
   talents.mortal_combo          = find_talent_spell( "Mortal Combo" );
   talents.never_surrender       = find_talent_spell( "Never Surrender" );
@@ -4501,6 +4547,7 @@ void warrior_t::init_spells()
   active.corrupted_blood_of_zakajz = nullptr;
   active.trauma                    = nullptr;
   active.opportunity_strikes       = nullptr;
+  active.charge                    = nullptr;
 
   if ( talents.bloodbath -> ok() ) active.bloodbath_dot = new bloodbath_dot_t( this );
   if ( spec.deep_wounds -> ok() ) active.deep_wounds = new deep_wounds_t( this );
@@ -4526,6 +4573,7 @@ void warrior_t::init_spells()
     this -> rampage_attacks.push_back( fourth );
     this -> rampage_attacks.push_back( fifth );
   }
+
 
   // Cooldowns
   cooldown.avatar                   = get_cooldown( "avatar" );
@@ -4960,7 +5008,7 @@ void warrior_t::apl_arms()
   single_target -> add_action( this, "Bladestorm", "interrupt=1,if=raid_event.adds.in>90|!raid_event.adds.exists|spell_targets.bladestorm_mh>desired_targets" );
 
   execute -> add_action( this, "Mortal Strike", "if=cooldown_react&buff.battle_cry.up&buff.focused_rage.stack=3" );
-  execute -> add_action( this, "Execute", "if=buff.battle_cry_deadly_calm.up", "actions.single+=/heroic_charge,if=rage.deficit>=40&(!cooldown.heroic_leap.remains|swing.mh.remains>1.2)\n#Remove the # above to run out of melee and charge back in for rage." );
+  execute -> add_action( this, "Execute", "if=buff.battle_cry_deadly_calm.up", "actions.execute+=/heroic_charge,if=rage.deficit>=40&(!cooldown.heroic_leap.remains|swing.mh.remains>1.2)\n#Remove the # above to run out of melee and charge back in for rage." );
   execute -> add_action( this, "Colossus Smash", "if=cooldown_react&buff.shattered_defenses.down" );
   execute -> add_action( this, "Execute", "if=buff.shattered_defenses.up&(rage>=17.6|buff.stone_heart.react)" );
   execute -> add_action( this, "Mortal Strike", "if=cooldown_react&equipped.archavons_heavy_hand&rage<60" );
@@ -5314,6 +5362,11 @@ void warrior_t::create_buffs()
   buff.intervene_movement = buff_creator_t( this, "intervene_movement" );
   buff.intercept_movement = buff_creator_t( this, "intercept_movement" );
 
+  buff.into_the_fray = buff_creator_t( this, "into_the_fray", find_spell( 202602 ) )
+    .chance( talents.into_the_fray -> ok() )
+    .default_value( find_spell( 202602 ) -> effectN( 1 ).percent() )
+    .add_invalidate( CACHE_HASTE );
+
   buff.focused_rage = buff_creator_t( this, "focused_rage", talents.focused_rage -> ok() ? talents.focused_rage : spec.focused_rage )
     .default_value( talents.focused_rage -> ok() ? talents.focused_rage -> effectN( 1 ).percent() : spec.focused_rage -> effectN( 1 ).percent() )
     .cd( timespan_t::zero() );
@@ -5336,7 +5389,8 @@ void warrior_t::create_buffs()
 
   buff.scales_of_earth = buff_creator_t( this, "scales_of_earth", artifact.scales_of_earth.data().effectN( 1 ).trigger() )
     .chance( artifact.scales_of_earth.data().proc_chance() )
-    .default_value( artifact.scales_of_earth.data().effectN( 1 ).trigger() -> effectN( 1 ).percent() );
+    .default_value( artifact.scales_of_earth.data().effectN( 1 ).trigger() -> effectN( 1 ).percent() )
+    .add_invalidate( CACHE_ARMOR );
 
   buff.precise_strikes = buff_creator_t( this, "precise_strikes", find_spell( 209493 ) )
     .default_value( artifact.precise_strikes.percent() )
@@ -5552,8 +5606,53 @@ void warrior_t::combat_begin()
       }
     }
   }
-
   player_t::combat_begin();
+  buff.into_the_fray -> trigger( 1 );
+}
+
+// Into the fray
+
+struct into_the_fray_callback_t
+{
+  warrior_t* w;
+  double fray_distance;
+  into_the_fray_callback_t( warrior_t* p ): w( p ), fray_distance( 0 )
+  {
+    fray_distance = p -> talents.into_the_fray -> effectN( 1 ).base_value();
+  }
+
+  void operator()( player_t* )
+  {
+    size_t i = w -> sim -> target_non_sleeping_list.size();
+    size_t buff_stacks_ = 0;
+    while ( i > 0 && buff_stacks_ < w -> buff.into_the_fray -> data().max_stacks() )
+    {
+      i--;
+      player_t* target_ = w -> sim -> target_non_sleeping_list[i];
+      if ( target_-> get_player_distance( *w ) <= fray_distance )
+      {
+        buff_stacks_++;
+      }
+    }
+    if ( w -> buff.into_the_fray -> current_stack != buff_stacks_ )
+    {
+      w -> buff.into_the_fray -> expire();
+      w -> buff.into_the_fray -> trigger( static_cast<int>( buff_stacks_ ) );
+    }
+  }
+};
+
+// warrior_t::create_actions ================================================
+
+bool warrior_t::create_actions()
+{
+  bool ca = player_t::create_actions();
+
+  if ( talents.into_the_fray -> ok() )
+  {
+    sim -> target_non_sleeping_list.register_callback( into_the_fray_callback_t( this ) );
+  }
+  return ca;
 }
 
 // warrior_t::reset =========================================================
@@ -5567,7 +5666,6 @@ void warrior_t::reset()
 
   heroic_charge = nullptr;
   rampage_driver = nullptr;
-  execute_sweeping_strike = nullptr;
   frothing_may_trigger = opportunity_strikes_once = true;
 }
 
@@ -5598,6 +5696,7 @@ void warrior_t::teleport( double, timespan_t )
 
 void warrior_t::trigger_movement( double distance, movement_direction_e direction )
 {
+  into_the_fray_callback_t( this );
   if ( heroic_charge )
   {
     event_t::cancel( heroic_charge ); // Cancel heroic leap if it's running to make sure nothing weird happens when movement from another source is attempted.
@@ -5698,6 +5797,8 @@ double warrior_t::composite_melee_haste() const
   a *= 1.0 / ( 1.0 + buff.fury_trinket -> check_stack_value() );
 
   a *= 1.0 / ( 1.0 + buff.frenzy -> check_stack_value() );
+
+  a *= 1.0 / ( 1.0 + buff.into_the_fray -> check_stack_value() );
 
   return a;
 }
@@ -5936,7 +6037,10 @@ double warrior_t::resource_gain( resource_e r, double a, gain_t* gain, action_t*
 {
   double aa = player_t::resource_gain( r, a, gain, action );
 
-  if ( r == RESOURCE_RAGE && talents.frothing_berserker -> ok() && resources.current[ r ] > 99 && frothing_may_trigger )
+  if ( frothing_may_trigger &&
+       r == RESOURCE_RAGE &&
+       talents.frothing_berserker -> ok() &&
+       resources.current[r] > 99 )
   {
     buff.frothing_berserker -> trigger();
     frothing_may_trigger = false;
@@ -6064,12 +6168,14 @@ void warrior_t::assess_damage_imminent( school_e school, dmg_e dmg, action_state
   }
 }
 
-// warrior_t::assess_damage =================================================
+// warrior_t::target_mitigation ============================================
 
-void warrior_t::assess_damage( school_e school,
-                               dmg_e    dtype,
-                               action_state_t* s )
+void warrior_t::target_mitigation( school_e school,
+                                   dmg_e    dtype,
+                                   action_state_t* s )
 {
+  player_t::target_mitigation( school, dtype, s );
+
   if ( s -> result == RESULT_HIT ||
        s -> result == RESULT_CRIT ||
        s -> result == RESULT_GLANCE )
@@ -6136,13 +6242,13 @@ void warrior_t::assess_damage( school_e school,
     buff.dragon_scales -> trigger();
     if ( s -> block_result == BLOCK_RESULT_CRIT_BLOCKED && artifact.scales_of_earth.rank() )
     {
-      buff.scales_of_earth -> trigger();
-      active.scales_of_earth -> target = s -> action -> player;
-      active.scales_of_earth -> execute();
+      if ( buff.scales_of_earth -> trigger() )
+      {
+        active.scales_of_earth -> target = s -> action -> player;
+        active.scales_of_earth -> execute();
+      }
     }
   }
-
-  player_t::assess_damage( school, dtype, s );
 }
 
 // warrior_t::create_options ================================================
@@ -6352,12 +6458,6 @@ static void najentuss_vertebrae( special_effect_t& effect )
   do_trinket_init( s, SPEC_NONE, s -> najentuss_vertebrae, effect );
 }
 
-static void aggramars_stride( special_effect_t& effect )
-{
-  warrior_t* s = debug_cast<warrior_t*>( effect.player );
-  do_trinket_init( s, SPEC_NONE, s -> aggramars_stride, effect );
-}
-
 // WARRIOR MODULE INTERFACE =================================================
 
 struct fury_trinket_t : public unique_gear::class_buff_cb_t<warrior_t, haste_buff_t, haste_buff_creator_t>
@@ -6532,7 +6632,6 @@ struct warrior_module_t: public module_t
     unique_gear::register_special_effect( 208908, mannoroths_bloodletting_manacles ); //NYI
     unique_gear::register_special_effect( 215096, najentuss_vertebrae );
     unique_gear::register_special_effect( 207767, ayalas_stone_heart_t(), true );
-    unique_gear::register_special_effect( 207438, aggramars_stride ); // NYI
     unique_gear::register_special_effect( 208177, weight_of_the_earth_t() );
     unique_gear::register_special_effect( 222266, raging_fury_t() );
     unique_gear::register_special_effect( 222266, raging_fury2_t() );

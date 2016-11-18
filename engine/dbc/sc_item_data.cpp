@@ -915,7 +915,7 @@ int item_database::scaled_stat( const item_t& item, const dbc_t& dbc, size_t idx
     double v_raw = util::round( item.parsed.data.stat_alloc[ idx ] * item_budget / 10000.0 );
     if ( util::is_combat_rating( static_cast<item_mod_type>( item.parsed.data.stat_type_e[ idx ] ) ) )
     {
-      v_raw *= dbc.combat_rating_multiplier( new_ilevel );
+      v_raw = apply_combat_rating_multiplier( item, v_raw );
     }
 
     // Socket penalty is supposedly gone in Warlords of Draenor, but it really does not seem so in the latest alpha.
@@ -1731,3 +1731,56 @@ bool item_database::has_item_bonus_type( const item_t& item, item_bonus_type bon
   return it != item.parsed.bonus_id.end();
 }
 
+double item_database::apply_combat_rating_multiplier( const item_t& item, double amount )
+{
+  auto type = item_combat_rating_type( &item.parsed.data );
+  // TODO: FIXME: Apply categorized combat rating multiplier only on PTR sims. For live ones, the
+  // combat rating multiplier category is ignored. This needs to be fixed when 7.1.5 goes live.
+  if ( item.player -> dbc.ptr &&
+       type == CR_MULTIPLIER_INVALID )
+  {
+    return amount;
+  }
+
+  auto combat_rating_multiplier = item.player -> dbc.combat_rating_multiplier( item.item_level(), type );
+  if ( combat_rating_multiplier != 0 )
+  {
+    return amount * combat_rating_multiplier;
+  }
+
+  return amount;
+}
+
+combat_rating_multiplier_type item_database::item_combat_rating_type( const item_data_t* data )
+{
+  switch ( data -> inventory_type )
+  {
+    case INVTYPE_NECK:
+    case INVTYPE_FINGER:
+      return CR_MULTIPLIER_JEWLERY;
+    case INVTYPE_TRINKET:
+      return CR_MULTIPLIER_TRINKET;
+    case INVTYPE_WEAPON:
+    case INVTYPE_2HWEAPON:
+    case INVTYPE_WEAPONMAINHAND:
+    case INVTYPE_WEAPONOFFHAND:
+    case INVTYPE_RANGED:
+    case INVTYPE_THROWN:
+      return CR_MULTIPLIER_WEAPON;
+    case INVTYPE_ROBE:
+    case INVTYPE_HEAD:
+    case INVTYPE_SHOULDERS:
+    case INVTYPE_CHEST:
+    case INVTYPE_CLOAK:
+    case INVTYPE_BODY:
+    case INVTYPE_WRISTS:
+    case INVTYPE_WAIST:
+    case INVTYPE_LEGS:
+    case INVTYPE_FEET:
+    case INVTYPE_SHIELD:
+    case INVTYPE_HOLDABLE:
+      return CR_MULTIPLIER_ARMOR;
+    default:
+      return CR_MULTIPLIER_INVALID;
+  }
+}

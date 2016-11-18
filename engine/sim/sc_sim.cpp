@@ -2148,7 +2148,7 @@ bool sim_t::init_actor( player_t* p )
     if ( m ) m -> init( p );
   }
 
-  if ( default_actions && ! p -> is_pet() )
+  if ( default_actions != 0 && !p -> is_pet() )
   {
     p -> clear_action_priority_lists();
     p -> action_list_str.clear();
@@ -3002,7 +3002,7 @@ void sim_t::create_options()
   add_option( opt_timespan( "ignite_sampling_delta", ignite_sampling_delta ) );
   // Output
   add_option( opt_bool( "save_profiles", save_profiles ) );
-  add_option( opt_bool( "default_actions", default_actions ) );
+  add_option( opt_int( "default_actions", default_actions ) );
   add_option( opt_bool( "debug", debug ) );
   add_option( opt_bool( "debug_each", debug_each ) );
   add_option( opt_func( "debug_seed", parse_debug_seed ) );

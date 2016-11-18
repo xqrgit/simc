@@ -80,6 +80,7 @@ std::vector<std::string> _hotfix_spell_map = {
   "Max Range",
   "Cooldown",
   "GCD",
+  "Category Cooldown",
   "Charges",
   "Charge Cooldown",
   "Category",
@@ -375,7 +376,7 @@ const char * _property_type_strings[] =
   "Spell Critical Damage", "Spell Penetration",     "Spell Targets",          "Spell Proc Chance",   "Unknown 2",             // 15
   "Spell Target Bonus",    "Spell Global Cooldown", "Spell Periodic Damage",  "Spell Effect 3",      "Spell Power",           // 20
   nullptr,                       "Spell Proc Frequency",  "Spell Damage Taken",     "Spell Dispel Chance", nullptr,                       // 25
-  nullptr,                       nullptr,                       "Spell Effect 4",         nullptr,                     nullptr,                       // 30
+  nullptr,                       nullptr,                       "Spell Effect 4",         nullptr,                     "Runic Power Generation",                       // 30
   nullptr,                       nullptr,                       nullptr,                        nullptr,                     nullptr                        // 35
 };
 
@@ -1050,6 +1051,9 @@ std::string spell_info::to_str( const dbc_t& dbc, const spell_data_t* spell, int
 
   if ( spell -> category() > 0 )
     s << "Category         : " << spell -> category() << std::endl;
+
+  if ( spell -> category_cooldown() > timespan_t::zero() )
+    s << "Category Cooldown: " << spell -> category_cooldown().total_seconds() << " seconds" << std::endl;
 
   if ( spell -> internal_cooldown() > timespan_t::zero() )
     s << "Internal Cooldown: " << spell -> internal_cooldown().total_seconds() << " seconds" << std::endl;

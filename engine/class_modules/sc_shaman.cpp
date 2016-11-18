@@ -1048,24 +1048,14 @@ public:
     ab::execute();
 
     trigger_maelstrom_gain( ab::execute_state );
+    trigger_eye_of_twisting_nether( ab::execute_state );
+  }
 
-    if ( ab::harmful && ab::execute_state -> result_amount > 0 )
-    {
-      if ( dbc::is_school( ab::get_school(), SCHOOL_FIRE ) )
-      {
-        p() -> buff.eotn_fire -> trigger();
-      }
+  void tick( dot_t* d ) override
+  {
+    ab::tick( d );
 
-      if ( dbc::is_school( ab::get_school(), SCHOOL_NATURE ) )
-      {
-        p() -> buff.eotn_shock -> trigger();
-      }
-
-      if ( dbc::is_school( ab::get_school(), SCHOOL_FROST ) )
-      {
-        p() -> buff.eotn_chill -> trigger();
-      }
-    }
+    trigger_eye_of_twisting_nether( d -> state );
   }
 
   virtual void impact( action_state_t* state ) override
@@ -1207,6 +1197,27 @@ public:
     p() -> action.unleash_doom[ spell_idx ] -> schedule_execute();
     proc_ud -> occur();
   }
+
+  void trigger_eye_of_twisting_nether( const action_state_t* state )
+  {
+    if ( ab::harmful && state -> result_amount > 0 )
+    {
+      if ( dbc::is_school( ab::get_school(), SCHOOL_FIRE ) )
+      {
+        p() -> buff.eotn_fire -> trigger();
+      }
+
+      if ( dbc::is_school( ab::get_school(), SCHOOL_NATURE ) )
+      {
+        p() -> buff.eotn_shock -> trigger();
+      }
+
+      if ( dbc::is_school( ab::get_school(), SCHOOL_FROST ) )
+      {
+        p() -> buff.eotn_chill -> trigger();
+      }
+    }
+  }
 };
 
 // ==========================================================================
@@ -1251,6 +1262,11 @@ public:
     if ( may_proc_stormbringer )
     {
       may_proc_stormbringer = ab::weapon && ab::weapon -> slot == SLOT_MAIN_HAND;
+    }
+
+    if ( may_proc_flametongue )
+    {
+      may_proc_flametongue = ab::weapon != nullptr;
     }
 
     if ( may_proc_windfury )
@@ -4086,9 +4102,11 @@ struct lava_burst_t : public shaman_spell_t
   {
     shaman_spell_t::init();
 
-    if ( player -> specialization() == SHAMAN_ELEMENTAL )
+    if ( p() -> specialization() == SHAMAN_ELEMENTAL &&
+         p() -> talent.echo_of_the_elements -> ok() )
     {
-      cooldown -> charges += p() -> talent.echo_of_the_elements -> effectN( 2 ).base_value();
+      cooldown -> charges = data().charges() +
+        p() -> talent.echo_of_the_elements -> effectN( 2 ).base_value();
     }
   }
 
@@ -6253,10 +6271,10 @@ void shaman_t::trigger_windfury_weapon( const action_state_t* state )
     return;
 
   // If doom winds is not up, block all off-hand weapon attacks
-  if ( ! buff.doom_winds -> check() && attack -> weapon -> slot != SLOT_MAIN_HAND )
+  if ( ! buff.doom_winds -> check() && attack -> weapon && attack -> weapon -> slot != SLOT_MAIN_HAND )
     return;
   // If doom winds is up, block all off-hand special weapon attacks
-  else if ( buff.doom_winds -> check() && attack -> weapon -> slot != SLOT_MAIN_HAND && attack -> special )
+  else if ( buff.doom_winds -> check() && attack -> weapon && attack -> weapon -> slot != SLOT_MAIN_HAND && attack -> special )
     return;
 
   double proc_chance = spec.windfury -> proc_chance();
@@ -6270,7 +6288,7 @@ void shaman_t::trigger_windfury_weapon( const action_state_t* state )
   if ( rng().roll( proc_chance ) )
   {
     action_t* a = nullptr;
-    if ( state -> action -> weapon -> slot == SLOT_MAIN_HAND )
+    if ( ! state -> action -> weapon || state -> action -> weapon -> slot == SLOT_MAIN_HAND )
     {
       a = windfury_mh;
     }
@@ -6349,9 +6367,6 @@ void shaman_t::trigger_flametongue_weapon( const action_state_t* state )
   assert( debug_cast< shaman_attack_t* >( state -> action ) != nullptr && "Flametongue Weapon called on invalid action type" );
   shaman_attack_t* attack = debug_cast< shaman_attack_t* >( state -> action );
   if ( ! attack -> may_proc_flametongue )
-    return;
-
-  if ( ! attack -> weapon )
     return;
 
   if ( ! buff.flametongue -> up() )
@@ -7904,6 +7919,21 @@ struct eotn_buff_chill_t : public eotn_buff_base_t
   { return debug_cast<shaman_t*>( e.player ) -> buff.eotn_chill; }
 };
 
+struct uncertain_reminder_t : public scoped_actor_callback_t<shaman_t>
+{
+  uncertain_reminder_t() : scoped_actor_callback_t( SHAMAN )
+  { }
+
+  void manipulate( shaman_t* shaman, const special_effect_t& e ) override
+  {
+    auto buff = buff_t::find( shaman, "bloodlust" );
+    if ( buff )
+    {
+      buff -> buff_duration += timespan_t::from_seconds( e.driver() -> effectN( 1 ).base_value() );
+    }
+  }
+};
+
 struct shaman_module_t : public module_t
 {
   shaman_module_t() : module_t( SHAMAN ) {}
@@ -7949,6 +7979,7 @@ struct shaman_module_t : public module_t
     register_special_effect( 207994, eotn_buff_fire_t(), true );
     register_special_effect( 207994, eotn_buff_shock_t(), true );
     register_special_effect( 207994, eotn_buff_chill_t(), true );
+    register_special_effect( 234814, uncertain_reminder_t() );
   }
 
   void register_hotfixes() const override

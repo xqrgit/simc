@@ -4,7 +4,7 @@
 #ifndef MAX_CLASS
 #define MAX_CLASS (13)
 #endif
-// Class based active abilities, wow build 22995
+// Class based active abilities, wow build 22996
 static unsigned __class_ability_data[][CLASS_ABILITY_TREE_SIZE][CLASS_ABILITY_SIZE] = {
   {
     {
@@ -1150,7 +1150,7 @@ static unsigned __class_ability_data[][CLASS_ABILITY_TREE_SIZE][CLASS_ABILITY_SI
 };
 #define TREE_SPECIALIZATION_SIZE (36)
 
-// Talent tree specialization abilities, wow build 22995
+// Talent tree specialization abilities, wow build 22996
 static unsigned __tree_specialization_data[][MAX_SPECS_PER_CLASS][TREE_SPECIALIZATION_SIZE] = {
   // Specialization abilities for Hunter pets
   {
@@ -2242,7 +2242,7 @@ static unsigned __tree_specialization_data[][MAX_SPECS_PER_CLASS][TREE_SPECIALIZ
 };
 #define CLASS_MASTERY_ABILITY_SIZE (1)
 
-// Class mastery abilities, wow build 22995
+// Class mastery abilities, wow build 22996
 static unsigned __class_mastery_ability_data[MAX_CLASS][MAX_SPECS_PER_CLASS][CLASS_MASTERY_ABILITY_SIZE] = {
   {
     {
@@ -2481,7 +2481,7 @@ static unsigned __class_mastery_ability_data[MAX_CLASS][MAX_SPECS_PER_CLASS][CLA
 #define MAX_RACE (28)
 #endif
 
-// Racial abilities, wow build 22995
+// Racial abilities, wow build 22996
 static unsigned __race_ability_data[MAX_RACE][MAX_CLASS][RACE_ABILITY_SIZE] = {
   {
     {     0, },
@@ -3219,7 +3219,7 @@ static unsigned __race_ability_data[MAX_RACE][MAX_CLASS][RACE_ABILITY_SIZE] = {
 };
 #define SET_BONUS_DATA_SIZE (544)
 
-// Set bonus data, wow build 22995
+// Set bonus data, wow build 22996
 static item_set_bonus_t __set_bonus_data[SET_BONUS_DATA_SIZE] = {
   // Set bonus name                              ,      OptName, EnumID, SetID, Tier, Bns, Cls, Spec,  Spell, Items
   { "Gladiator's Battlegear"                     ,        "pvp",      0,  1230,    0,   2,   1,   71, 165636, { 127055, 127081, 127092, 127103, 127114,  0 } },
@@ -3790,7 +3790,7 @@ static item_set_bonus_t __set_bonus_data[SET_BONUS_DATA_SIZE] = {
 };
 #define RPPMMOD_SIZE (245)
 
-// 245 RPPM Modifiers, wow build level 22995
+// 245 RPPM Modifiers, wow build level 22996
 static struct rppm_modifier_t __rppmmodifier_data[] = {
   {  49530,    1,  1,  1.0000 },
   {  51128,    4,  1,  1.0000 },
@@ -4041,7 +4041,7 @@ static struct rppm_modifier_t __rppmmodifier_data[] = {
 };
 #define ARTIFACT_SIZE (41)
 
-// Artifact base data, wow build 22995
+// Artifact base data, wow build 22996
 static struct artifact_t __artifact_data[ARTIFACT_SIZE] = {
   {  2,  70 },
   {  3, 577 },
@@ -4087,7 +4087,7 @@ static struct artifact_t __artifact_data[ARTIFACT_SIZE] = {
 };
 #define ARTIFACT_POWER_SIZE (715)
 
-// Artifact power data, wow build 22995
+// Artifact power data, wow build 22996
 static struct artifact_power_data_t __artifact_power_data[ARTIFACT_POWER_SIZE] = {
   {   40,   2,  18,  0,   0, 205273, "Wake of Ashes"                      }, // Wake of Ashes (id=205273, n_ranks=1)
   {   41,   2,   0,  4,   3, 186941, "Highlord's Judgment"                }, // Highlord's Judgment (id=186941, n_ranks=6)
@@ -4807,7 +4807,7 @@ static struct artifact_power_data_t __artifact_power_data[ARTIFACT_POWER_SIZE] =
 };
 #define ARTIFACT_POWER_RANK_SIZE (3063)
 
-// Artifact power rank data, wow build 22995
+// Artifact power rank data, wow build 22996
 static struct artifact_power_rank_t __artifact_power_rank_data[ARTIFACT_POWER_RANK_SIZE] = {
   { 2316,    40,  0, 205273,      0.000, 0x00000000, 0 },
   { 2317,    41,  0, 186941,      8.000, 0x00000000, 0 },
@@ -7563,26 +7563,26 @@ static struct artifact_power_rank_t __artifact_power_rank_data[ARTIFACT_POWER_RA
   { 6054,  1378, 17, 214924,     27.000, 0x00000000, 0 },
   { 6055,  1378, 18, 214924,     28.000, 0x00000000, 0 },
   { 6056,  1378, 19, 214924,     29.000, 0x00000000, 0 },
-  { 6057,  1379,  0, 214925,      5.000, 0x00000000, 0 },
-  { 6058,  1379,  1, 214925,      5.500, 0x00000000, 0 },
-  { 6059,  1379,  2, 214925,      6.000, 0x00000000, 0 },
-  { 6060,  1379,  3, 214925,      6.500, 0x00000000, 0 },
-  { 6061,  1379,  4, 214925,      7.000, 0x00000000, 0 },
-  { 6062,  1379,  5, 214925,      7.500, 0x00000000, 0 },
-  { 6063,  1379,  6, 214925,      8.000, 0x00000000, 0 },
-  { 6064,  1379,  7, 214925,      8.500, 0x00000000, 0 },
-  { 6065,  1379,  8, 214925,      9.000, 0x00000000, 0 },
-  { 6066,  1379,  9, 214925,      9.500, 0x00000000, 0 },
-  { 6067,  1379, 10, 214925,     10.000, 0x00000000, 0 },
-  { 6068,  1379, 11, 214925,     10.500, 0x00000000, 0 },
-  { 6069,  1379, 12, 214925,     11.000, 0x00000000, 0 },
-  { 6070,  1379, 13, 214925,     11.500, 0x00000000, 0 },
-  { 6071,  1379, 14, 214925,     12.000, 0x00000000, 0 },
-  { 6072,  1379, 15, 214925,     12.500, 0x00000000, 0 },
-  { 6073,  1379, 16, 214925,     13.000, 0x00000000, 0 },
-  { 6074,  1379, 17, 214925,     13.500, 0x00000000, 0 },
-  { 6075,  1379, 18, 214925,     14.000, 0x00000000, 0 },
-  { 6076,  1379, 19, 214925,     14.500, 0x00000000, 0 },
+  { 6057,  1379,  0, 214925,      4.000, 0x00000010, 0 },
+  { 6058,  1379,  1, 214925,      4.400, 0x00000010, 0 },
+  { 6059,  1379,  2, 214925,      4.800, 0x00000010, 0 },
+  { 6060,  1379,  3, 214925,      5.200, 0x00000010, 0 },
+  { 6061,  1379,  4, 214925,      5.600, 0x00000010, 0 },
+  { 6062,  1379,  5, 214925,      6.000, 0x00000010, 0 },
+  { 6063,  1379,  6, 214925,      6.400, 0x00000010, 0 },
+  { 6064,  1379,  7, 214925,      6.800, 0x00000010, 0 },
+  { 6065,  1379,  8, 214925,      7.200, 0x00000010, 0 },
+  { 6066,  1379,  9, 214925,      7.600, 0x00000010, 0 },
+  { 6067,  1379, 10, 214925,      8.000, 0x00000010, 0 },
+  { 6068,  1379, 11, 214925,      8.400, 0x00000010, 0 },
+  { 6069,  1379, 12, 214925,      8.800, 0x00000010, 0 },
+  { 6070,  1379, 13, 214925,      9.200, 0x00000010, 0 },
+  { 6071,  1379, 14, 214925,      9.600, 0x00000010, 0 },
+  { 6072,  1379, 15, 214925,     10.000, 0x00000010, 0 },
+  { 6073,  1379, 16, 214925,     10.400, 0x00000010, 0 },
+  { 6074,  1379, 17, 214925,     10.800, 0x00000010, 0 },
+  { 6075,  1379, 18, 214925,     11.200, 0x00000010, 0 },
+  { 6076,  1379, 19, 214925,     11.600, 0x00000010, 0 },
   { 6077,  1380,  0, 214926,      5.000, 0x00000000, 0 },
   { 6078,  1380,  1, 214926,      5.500, 0x00000000, 0 },
   { 6079,  1380,  2, 214926,      6.000, 0x00000000, 0 },
@@ -7873,15 +7873,35 @@ static struct artifact_power_rank_t __artifact_power_rank_data[ARTIFACT_POWER_RA
   { 6525,  1456,  0, 226829,      0.000, 0x00000000, 0 },
   {    0,     0,  0,      0,      0.000, 0x00000000, 0 },
 };
-#define ARTIFACT_POWER_RANK_HOTFIX_SIZE (5)
+#define ARTIFACT_POWER_RANK_HOTFIX_SIZE (25)
 
-// 5 artifact_power_rank hotfix entries, wow build level 22995
+// 25 artifact_power_rank hotfix entries, wow build level 22996
 static hotfix::client_hotfix_entry_t __artifact_power_rank_hotfix_data[] = {
   {   3980,  4, 0.000000, 6.000000 },
   {   3981,  4, 15.000000, 12.000000 },
   {   3982,  4, 20.000000, 18.000000 },
   {   3983,  4, 25.000000, 24.000000 },
   {   3985,  4, 35.000000, 36.000000 },
+  {   6057,  4, 5.000000, 4.000000 },
+  {   6058,  4, 5.500000, 4.400000 },
+  {   6059,  4, 6.000000, 4.800000 },
+  {   6060,  4, 6.500000, 5.200000 },
+  {   6061,  4, 7.000000, 5.600000 },
+  {   6062,  4, 7.500000, 6.000000 },
+  {   6063,  4, 8.000000, 6.400000 },
+  {   6064,  4, 8.500000, 6.800000 },
+  {   6065,  4, 9.000000, 7.200000 },
+  {   6066,  4, 9.500000, 7.600000 },
+  {   6067,  4, 10.000000, 8.000000 },
+  {   6068,  4, 10.500000, 8.400000 },
+  {   6069,  4, 11.000000, 8.800000 },
+  {   6070,  4, 11.500000, 9.200000 },
+  {   6071,  4, 12.000000, 9.600000 },
+  {   6072,  4, 12.500000, 10.000000 },
+  {   6073,  4, 13.000000, 10.400000 },
+  {   6074,  4, 13.500000, 10.800000 },
+  {   6075,  4, 14.000000, 11.200000 },
+  {   6076,  4, 14.500000, 11.600000 },
   {      0,  0, 0, 0 },
 };
 
