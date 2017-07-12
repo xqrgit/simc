@@ -1,26 +1,10 @@
-# T19H
-# Tier 19 Heroic
-# * Ilvl Cap: 865
-# * Artifact Rank Cap: 26
-# * 3 Relics with max ilevel of 865
-# * Mythic+ gear is permitted up to the item level cap.
-# * No items from Violet Hold (unless 840 ilevel)
-# * No items from World Bosses / World Quests / BoEs
-# * No items from Nighthold (including set bonuses)
-# * No Legendaries
-# * No Random Gems (ie. Bonus RNG Gem Slots)
-# * No Tertiary Stats
-# * No Ranked Gear (ie. Warforged/Titanforged)
-# * No Hardcoded Stats (generally if an item gives wrong stats: either bonus_id is wrong, either the item no longer exists in-game)
-# * It is recommended to use enchant name (ex : ",enchant=binding_of_mastery") rather than id/hardcoded stats.
-
 rogue="Rogue_Assassination_T19H"
 level=110
-race=orc
+race=pandaren
 role=attack
 position=back
-talents=2110111
-artifact=43:0:0:0:0:323:3:324:3:325:3:327:2:328:3:330:3:331:3:332:1:334:1:335:1:337:1:346:1:347:1:1276:1
+talents=1130111
+artifact=43:0:0:0:0:323:3:324:3:325:3:326:3:327:3:328:3:329:3:330:3:331:3:332:1:333:1:334:1:335:1:337:1:346:1:347:1:1276:1:1384:1
 spec=assassination
 
 head=biornskin_hood,id=134196,bonus_id=1727/1527
@@ -43,11 +27,11 @@ save=Rogue_Assassination_T19H.simc
 
 rogue="Rogue_Assassination_Exsg_T19H"
 level=110
-race=orc
+race=pandaren
 role=attack
 position=back
-talents=2110131
-artifact=43:0:0:0:0:323:3:324:3:325:3:327:2:328:3:330:3:331:3:332:1:334:1:335:1:337:1:346:1:347:1:1276:1
+talents=2130131
+artifact=43:0:0:0:0:323:3:324:3:325:3:326:3:327:3:328:3:329:3:330:3:331:3:332:1:333:1:334:1:335:1:337:1:346:1:347:1:1276:1:1384:1
 spec=assassination
 
 head=hood_of_the_blind_executioner,id=137511,bonus_id=1727/1517
@@ -75,7 +59,7 @@ timeofday=day
 role=attack
 position=back
 talents=1310022
-artifact=44:0:0:0:0:1052:1:1053:1:1054:1:1056:1:1057:1:1060:3:1061:3:1062:3:1063:3:1064:3:1065:3:1066:3:1348:1
+artifact=44:0:0:0:0:1052:1:1053:1:1054:1:1055:1:1056:1:1057:1:1058:1:1059:3:1060:3:1061:3:1062:3:1063:3:1064:3:1065:3:1066:3:1067:3:1348:1:1385:1
 spec=outlaw
 
 head=vigilant_bondbreaker_headdress,id=134446,bonus_id=1727/1517
@@ -102,8 +86,8 @@ race=night_elf
 timeofday=day
 role=attack
 position=back
-talents=2210011
-artifact=17:0:0:0:0:851:1:852:3:853:3:854:3:855:3:856:3:858:3:860:3:862:1:863:1:864:1:866:1:1349:1
+talents=2310012
+artifact=17:0:0:0:0:851:1:852:3:853:3:854:3:855:3:856:3:857:3:858:3:859:3:860:3:861:1:862:1:863:1:864:1:865:1:866:1:1349:1:1386:1
 spec=subtlety
 
 head=cowl_of_fright,id=139205,bonus_id=1805
@@ -116,8 +100,8 @@ hands=manalanced_gloves,id=134444,bonus_id=1727/1517
 waist=lifeless_buckled_girdle,id=139197,bonus_id=1805
 legs=wardens_martial_greaves,id=137515,bonus_id=1727/1517
 feet=grove_darkeners_treads,id=134429,bonus_id=1727/1517
-finger1=loop_of_eightfold_eyes,id=134527,bonus_id=1727/1517,enchant=binding_of_mastery
-finger2=jeweled_signet_of_melandrus,id=134542,bonus_id=1727/1517,enchant=binding_of_mastery
+finger1=loop_of_eightfold_eyes,id=134527,bonus_id=1727/1517,enchant=binding_of_critical_strike
+finger2=jeweled_signet_of_melandrus,id=134542,bonus_id=1727/1517,enchant=binding_of_critical_strike
 trinket1=bloodthirsty_instinct,id=139329,bonus_id=1805
 trinket2=hunger_of_the_pack,id=136975,bonus_id=1727/1517
 main_hand=fangs_of_the_devourer,id=128476,gem_id=136721/137377/136721,relic_id=1517:1727/1517:1727/1517:1727

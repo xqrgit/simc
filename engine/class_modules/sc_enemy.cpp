@@ -21,8 +21,7 @@ enum tank_dummy_e
 enum tmi_boss_e
 {
   TMI_NONE = 0,
-  TMI_T16L, TMI_T16N, TMI_T16H, TMI_T16M, TMI_17L, TMI_T17N, TMI_T17H, TMI_T17M,
-  TMI_T18L, TMI_T18N, TMI_T18H, TMI_T18M, TMI_T19L, TMI_T19N, TMI_T19H, TMI_T19M, TMI_MAX
+  TMI_T19L, TMI_T19N, TMI_T19H, TMI_T19M, TMI_MAX
 };
 
 
@@ -59,7 +58,7 @@ struct enemy_t : public player_t
   { return ROLE_TANK; }
 
   virtual resource_e primary_resource() const override
-  { return RESOURCE_MANA; }
+  { return RESOURCE_HEALTH; }
 
   virtual action_t* create_action( const std::string& name, const std::string& options_str ) override;
   virtual void init_base_stats() override;
@@ -198,18 +197,31 @@ struct enemy_action_t : public ACTION_TYPE
     // TODO: This does not work for heals at all, as it presumes enemies in the
     // actor list.
     tl.clear();
-    tl.push_back( this -> target );
+    tl.push_back( this->target );
 
-    for ( size_t i = 0, actors = this -> sim -> actor_list.size(); i < actors; i++ )
+    if ( this->sim->single_actor_batch )
     {
-      player_t* actor = this -> sim -> actor_list[ i ];
-      //only add non heal_target tanks to this list for now
-      if ( ! actor -> is_sleeping() &&
-           ! actor -> is_enemy() &&
-           actor -> primary_role() == ROLE_TANK &&
-           actor != this -> target &&
-           actor != this -> sim -> heal_target )
+      player_t* actor = this -> sim -> player_no_pet_list[this->sim->current_index];
+      if ( !actor->is_sleeping() &&
+           !actor->is_enemy() &&
+           actor->primary_role() == ROLE_TANK &&
+           actor != this->target &&
+           actor != this->sim->heal_target )
         tl.push_back( actor );
+    }
+    else
+    {
+      for ( size_t i = 0, actors = this->sim->actor_list.size(); i < actors; i++ )
+      {
+        player_t* actor = this->sim->actor_list[i];
+        //only add non heal_target tanks to this list for now
+        if ( !actor->is_sleeping() &&
+             !actor->is_enemy() &&
+             actor->primary_role() == ROLE_TANK &&
+             actor != this->target &&
+             actor != this->sim->heal_target )
+          tl.push_back( actor );
+      }
     }
     //if we have no target (no tank), add the healing target as substitute
     if ( tl.empty() )
@@ -276,9 +288,16 @@ struct enemy_action_driver_t : public CHILD_ACTION_TYPE
     // construct the target list
     std::vector<player_t*> target_list;
 
-    for ( size_t i = 0; i < this -> sim -> player_no_pet_list.size(); i++ )
-      if ( this -> sim -> player_no_pet_list[ i ] -> primary_role() == ROLE_TANK )
-        target_list.push_back( this -> sim -> player_no_pet_list[ i ] );
+    if ( this->sim->single_actor_batch )
+    {
+      target_list.push_back( this -> sim -> player_no_pet_list[this->sim->current_index] );
+    }
+    else
+    {
+      for ( size_t i = 0; i < this->sim->player_no_pet_list.size(); i++ )
+        if ( this->sim->player_no_pet_list[i]->primary_role() == ROLE_TANK )
+          target_list.push_back( this->sim->player_no_pet_list[i] );
+    }
 
     // create a separate action for each potential target
     for ( size_t i = 0; i < target_list.size(); i++ )
@@ -408,7 +427,9 @@ struct auto_attack_t : public enemy_action_t<attack_t>
     trigger_gcd = timespan_t::zero();
 
     size_t num_attacks = 0;
-    if ( aoe_tanks == 1 || aoe_tanks < 0 )
+    if ( this ->sim ->single_actor_batch )
+      num_attacks = 1;
+    else if ( aoe_tanks == 1 || aoe_tanks < 0 )
        num_attacks = this -> player -> sim -> actor_list.size();
     else
       num_attacks = static_cast<size_t>( aoe_tanks );
@@ -497,7 +518,9 @@ struct auto_attack_off_hand_t : public enemy_action_t<attack_t>
     trigger_gcd = timespan_t::zero();
 
     size_t num_attacks = 0;
-    if ( aoe_tanks == 1 || aoe_tanks < 0 )
+    if ( this ->sim ->single_actor_batch )
+      num_attacks = 1;
+    else if ( aoe_tanks == 1 || aoe_tanks < 0 )
        num_attacks = this -> player -> sim -> actor_list.size();
     else
       num_attacks = static_cast<size_t>( aoe_tanks );
@@ -752,12 +775,25 @@ struct spell_aoe_t : public enemy_action_t<spell_t>
     tl.clear();
     tl.push_back( target );
 
-    for ( size_t i = 0, actors = sim -> actor_list.size(); i < actors; ++i )
+    if ( sim->single_actor_batch )
     {
-      if ( ! sim -> actor_list[ i ] -> is_sleeping() &&
-           !sim -> actor_list[ i ] -> is_enemy() &&
-           sim -> actor_list[ i ] != target )
-        tl.push_back( sim -> actor_list[ i ] );
+      player_t* actor = sim -> player_no_pet_list[sim->current_index];
+      if ( !actor->is_sleeping() &&
+           !actor->is_enemy() &&
+           actor->primary_role() == ROLE_TANK &&
+           actor != this->target &&
+           actor != this->sim->heal_target )
+        tl.push_back( actor );
+    }
+    else
+    {
+      for ( size_t i = 0, actors = sim->actor_list.size(); i < actors; ++i )
+      {
+        if ( !sim->actor_list[i]->is_sleeping() &&
+             !sim->actor_list[i]->is_enemy() &&
+             sim->actor_list[i] != target )
+          tl.push_back( sim->actor_list[i] );
+      }
     }
 
     return tl.size();
@@ -955,28 +991,6 @@ struct tmi_enemy_t : public enemy_t
     // eventually plan on using regular expressions here
     if ( util::str_in_str_ci( tmi_string, "none" ) )
       return TMI_NONE;
-    if ( util::str_in_str_ci( tmi_string, "T16L" ) )
-      return TMI_T16L;
-    if ( util::str_in_str_ci( tmi_string, "T16N" ) )
-      return TMI_T16N;
-    if ( util::str_in_str_ci( tmi_string, "T16H" ) )
-      return TMI_T16H;
-    if ( util::str_in_str_ci( tmi_string, "T16M" ) )
-      return TMI_T16M;
-    if ( util::str_in_str_ci( tmi_string, "T17N" ) )
-      return TMI_T17N;
-    if ( util::str_in_str_ci( tmi_string, "T17H" ) )
-      return TMI_T17H;
-    if ( util::str_in_str_ci( tmi_string, "T17M" ) )
-      return TMI_T17M;
-    if ( util::str_in_str_ci( tmi_string, "T18L" ) )
-      return TMI_T18L;
-    if ( util::str_in_str_ci( tmi_string, "T18N" ) )
-      return TMI_T18N;
-    if ( util::str_in_str_ci( tmi_string, "T18H" ) )
-      return TMI_T18H;
-    if ( util::str_in_str_ci( tmi_string, "T18M" ) )
-      return TMI_T18M;
     if ( util::str_in_str_ci( tmi_string, "T19L" ) )
       return TMI_T19L;
     if ( util::str_in_str_ci( tmi_string, "T19N" ) )
@@ -1021,10 +1035,7 @@ struct tmi_enemy_t : public enemy_t
     const int num_bosses = TMI_MAX;
     assert( tmi_boss_enum < TMI_MAX );
     int aa_damage[ num_bosses ] = { 0, // L       N       H       M
-                                        40000,  50000,  65000,  80000,  // T16
-                                        150000, 195000, 255000, 315000, // T17
-                                        255000, 315000, 475000, 650000,
-                                        1000000, 1300000, 1600000, 2000000// T18 -- L-H values are estimates
+                                        3000000, 4600000, 6200000, 8000000// T18 -- L-H values are estimates
                                   };
 
     als += "/auto_attack,damage=" + util::to_string( aa_damage[ tmi_boss_enum ] ) + ",attack_speed=1.5,aoe_tanks=1";
@@ -1630,10 +1641,10 @@ expr_t* enemy_t::create_expression( action_t* action,
         {
           if ( debuff_str == "damage_taken" )
             return boss -> sim -> actor_list[ boss -> current_target ] -> debuffs.damage_taken -> current_stack;
-          else if ( debuff_str == "vulnerable" )
-            return boss -> sim -> actor_list[ boss -> current_target ] -> debuffs.vulnerable -> current_stack;
-          else if ( debuff_str == "mortal_wounds" )
-            return boss -> sim -> actor_list[ boss -> current_target ] -> debuffs.mortal_wounds -> current_stack;
+          //else if ( debuff_str == "vulnerable" )
+          //  return boss -> sim -> actor_list[ boss -> current_target ] -> debuffs.vulnerable -> current_stack;
+          //else if ( debuff_str == "mortal_wounds" )
+          //  return boss -> sim -> actor_list[ boss -> current_target ] -> debuffs.mortal_wounds -> current_stack;
           // may add others here as desired
           else
             return 0;

@@ -419,8 +419,8 @@ void enchants::colossus( special_effect_t& effect )
 
   absorb_buff_t* buff =
       absorb_buff_creator_t( effect.item -> player,
-                             tokenized_name( spell ) + suffix( effect.item ) )
-      .spell( spell )
+                             tokenized_name( spell ) + suffix( effect.item ),
+                             spell )
       .source( effect.item -> player -> get_stats( tokenized_name( spell ) + suffix( effect.item ) ) )
       .activated( false );
 
@@ -2782,10 +2782,10 @@ void item::felmouth_frenzy( special_effect_t& effect )
   cb -> initialize();
 }
 
-struct fel_burn_t : public debuff_t
+struct fel_burn_t : public buff_t
 {
   fel_burn_t( const actor_pair_t& p, const special_effect_t& source_effect ) :
-    debuff_t( buff_creator_t( p, "fel_burn", p.source -> find_spell( 184256 ), source_effect.item )
+    buff_t( buff_creator_t( p, "fel_burn", p.source -> find_spell( 184256 ), source_effect.item )
     .refresh_behavior( BUFF_REFRESH_DISABLED )
     // Add a millisecond of duration to the debuff so we ensure that the last tick (at 15 seconds)
     // will always have the correct number of stacks.
@@ -3072,14 +3072,14 @@ struct mark_of_doom_damage_driver_t : public dbc_proc_callback_t
 
 // Specialized Mark of Doom debuff, enables/disables mark_of_doom_driver_t (above) when the debuff
 // goes up/down.
-struct mark_of_doom_t : public debuff_t
+struct mark_of_doom_t : public buff_t
 {
   mark_of_doom_damage_driver_t* driver_cb;
   action_t* damage_spell;
   special_effect_t* effect;
 
   mark_of_doom_t( const actor_pair_t& p, const special_effect_t& source_effect ) :
-    debuff_t( buff_creator_t( p, "mark_of_doom", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item ).activated( false ) ),
+    buff_t( buff_creator_t( p, "mark_of_doom", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item ).activated( false ) ),
     damage_spell( p.source -> find_action( "doom_nova" ) )
   {
     // Special effect to drive the AOE damage callback
@@ -3097,21 +3097,21 @@ struct mark_of_doom_t : public debuff_t
 
   void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
   {
-    debuff_t::expire_override( expiration_stacks, remaining_duration );
+    buff_t::expire_override( expiration_stacks, remaining_duration );
 
     driver_cb -> deactivate();
   }
 
   void execute( int stacks, double value, timespan_t duration ) override
   {
-    debuff_t::execute( stacks, value, duration );
+    buff_t::execute( stacks, value, duration );
 
     driver_cb -> activate();
   }
 
   void reset() override
   {
-    debuff_t::reset();
+    buff_t::reset();
 
     driver_cb -> deactivate();
   }
@@ -3576,8 +3576,8 @@ void item::warlords_unseeing_eye( special_effect_t& effect )
   // Store the magic mitigation number in a player-scope variable.
   effect.player -> warlords_unseeing_eye = effect.driver() -> effectN( 2 ).average( effect.item ) / 10000.0;
   // Register our handler function so it can be managed by player_t::account_absorb_buffs()
-  effect.player -> instant_absorb_list[ effect.driver() -> id() ] =
-    new instant_absorb_t( effect.player, effect.driver(), "warlords_unseeing_eye", &warlords_unseeing_eye_handler );
+  effect.player -> instant_absorb_list.insert( std::make_pair<unsigned, instant_absorb_t>( effect.driver() -> id(),
+      instant_absorb_t( effect.player, effect.driver(), "warlords_unseeing_eye", &warlords_unseeing_eye_handler ) ));
   // Push the effect into the priority list. 
   effect.player -> absorb_priority.push_back( 184762 );
 }
@@ -3689,6 +3689,25 @@ void unique_gear::initialize_special_effect_2( special_effect_t* effect )
   }
   else if ( effect -> type == SPECIAL_EFFECT_EQUIP )
   {
+    // Ensure we are not accidentally initializing a generic special effect multiple times
+    bool exists = effect -> player -> callbacks.has_callback( [ effect ]( const action_callback_t* cb ) {
+      auto dbc_cb = dynamic_cast<const dbc_proc_callback_t*>( cb );
+      if ( dbc_cb == nullptr )
+      {
+        return false;
+      }
+
+      // Special effects are unique, and have an 1:1 relationship with (dbc proc) callbacks. Pointer
+      // comparison here is enough to ensure that no special_effect_t object gets more than one
+      // dbc_proc_callback_t object.
+      return &( dbc_cb -> effect ) == effect;
+    } );
+
+    if ( exists )
+    {
+      return;
+    }
+
     if ( effect -> item )
     {
       new dbc_proc_callback_t( effect -> item, *effect );
@@ -3771,12 +3790,12 @@ struct item_effect_base_expr_t : public expr_t
 
     for ( size_t i = 0; i < slots.size(); i++ )
     {
-      e = &( a -> player -> items[ slots[ i ] ].special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_EQUIP ) );
-      if ( e -> source != SPECIAL_EFFECT_SOURCE_NONE )
+      e = a -> player -> items[ slots[ i ] ].special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_EQUIP );
+      if ( e && e -> source != SPECIAL_EFFECT_SOURCE_NONE )
         effects.push_back( e );
 
-      e = &( a -> player -> items[ slots[ i ] ].special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE ) );
-      if ( e -> source != SPECIAL_EFFECT_SOURCE_NONE )
+      e = a -> player -> items[ slots[ i ] ].special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE );
+      if ( e && e -> source != SPECIAL_EFFECT_SOURCE_NONE )
         effects.push_back( e );
     }
   }
@@ -3857,25 +3876,6 @@ struct item_buff_exists_expr_t : public item_effect_expr_t
   { return v; }
 };
 
-struct legendary_item_buff_exists_expr_t : public item_effect_expr_t
-{
-  legendary_item_buff_exists_expr_t( action_t* a, const std::vector<slot_e>& slots, const std::string& expr_str ) :
-    item_effect_expr_t( a, slots )
-  {
-    for (auto e : effects)
-    {
-      
-
-      buff_t* b = buff_t::find( a -> player, e -> name() );
-      if ( b )
-      {
-        if ( expr_t* expr_obj = buff_t::create_expression( b -> name(), a, expr_str, b ) )
-          exprs.push_back( expr_obj );
-      }
-    }
-  }
-};
-
 // Cooldown based item expressions, creates cooldown expressions for the items
 // from user input
 struct item_cooldown_expr_t : public item_effect_expr_t
@@ -3953,37 +3953,28 @@ expr_t* unique_gear::create_expression( action_t* a, const std::string& name_str
 
     std::vector<std::string> splits = util::string_split( name_str, "." );
 
-    if ( splits[0] != "legendary_ring" )
+    if ( util::is_number( splits[1] ) )
     {
-      if ( util::is_number( splits[1] ) )
-      {
-        if ( splits[1] == "1" )
-        {
-          slots.push_back( SLOT_TRINKET_1 );
-        }
-        else if ( splits[1] == "2" )
-        {
-          slots.push_back( SLOT_TRINKET_2 );
-        }
-        else
-          return 0;
-        ptype_idx++;
-
-        stat_idx++;
-        expr_idx++;
-      }
-      // No positional parameter given so check both trinkets
-      else
+      if ( splits[1] == "1" )
       {
         slots.push_back( SLOT_TRINKET_1 );
+      }
+      else if ( splits[1] == "2" )
+      {
         slots.push_back( SLOT_TRINKET_2 );
       }
+      else
+        return 0;
+      ptype_idx++;
+
+      stat_idx++;
+      expr_idx++;
     }
+      // No positional parameter given so check both trinkets
     else
     {
-      legendary_ring = true;
-      slots.push_back( SLOT_FINGER_1 );
-      slots.push_back( SLOT_FINGER_2 );
+      slots.push_back( SLOT_TRINKET_1 );
+      slots.push_back( SLOT_TRINKET_2 );
     }
 
   if ( util::str_prefix_ci( splits[ ptype_idx ], "has_" ) )
@@ -4012,12 +4003,9 @@ expr_t* unique_gear::create_expression( action_t* a, const std::string& name_str
     }
   }
 
-  if ( pexprtype == PROC_ENABLED && ptype != PROC_COOLDOWN && ( splits.size() >= 4 || legendary_ring ) )
+  if ( pexprtype == PROC_ENABLED && ptype != PROC_COOLDOWN && splits.size() >= 4 )
   {
-    if ( legendary_ring )
-      return new legendary_item_buff_exists_expr_t( a, slots, splits[ 1 ] );
-    else
-      return new item_buff_expr_t( a, slots, stat, ptype == PROC_STACKING_STAT, splits[ expr_idx ] );
+    return new item_buff_expr_t( a, slots, stat, ptype == PROC_STACKING_STAT, splits[ expr_idx ] );
   }
   else if ( pexprtype == PROC_ENABLED && ptype == PROC_COOLDOWN && splits.size() >= 3  )
   {
@@ -4044,6 +4032,11 @@ const item_data_t* unique_gear::find_consumable( const dbc_t& dbc,
                                                  const std::string& name,
                                                  item_subclass_consumable type )
 {
+  if ( name.empty() )
+  {
+    return nullptr;
+  }
+
   // Poor man's longest matching prefix!
   const item_data_t* item = dbc::find_consumable( type, dbc.ptr, [&name]( const item_data_t* i ) {
     std::string n = i -> name;
@@ -4568,10 +4561,89 @@ bool cmp_special_effect( const special_effect_db_item_t& a, const special_effect
 
   return a.spell_id < b.spell_id;
 }
+
+// Very limited setup to automatically apply some spell data to actions. Currently only considers
+// generic (direct damage/healing) and tick damage multipliers. This should be currently enough to
+// get automatica application of various spec/class specific, label-based modifiers that have
+// started surfacing in 7.1.5 onwards.
+void apply_spell_labels( const spell_data_t* spell, action_t* a )
+{
+  const auto sim = a -> sim;
+
+  for ( size_t i = 1, end = spell -> effect_count(); i <= end; ++i )
+  {
+    auto& effect = spell -> effectN( i );
+    if ( effect.type() != E_APPLY_AURA || effect.subtype() != A_ADD_PCT_LABEL_MODIFIER )
+    {
+      continue;
+    }
+
+    if ( ! a -> data().affected_by_label( effect.misc_value2() ) )
+    {
+      continue;
+    }
+
+    double old_value = 0, new_value = 0;
+    std::string modifier_str;
+    switch ( static_cast<property_type_t>( effect.misc_value1() ) )
+    {
+      case P_EFFECT_1:
+        old_value = a -> base_multiplier;
+        modifier_str = "direct/periodic damage/healing";
+        a -> base_multiplier *= 1.0 + effect.percent();
+        new_value = a -> base_multiplier;
+        break;
+      case P_GENERIC:
+        old_value = a -> base_dd_multiplier;
+        modifier_str = "direct damage/healing";
+        a -> base_dd_multiplier *= 1.0 + effect.percent();
+        new_value = a -> base_dd_multiplier;
+        break;
+      case P_TICK_DAMAGE:
+        old_value = a -> base_td_multiplier;
+        modifier_str = "periodic damage/healing";
+        a -> base_td_multiplier *= 1.0 + effect.percent();
+        new_value = a -> base_td_multiplier;
+        break;
+      default:
+        break;
+    }
+
+    if ( sim -> debug && ! modifier_str.empty() )
+    {
+      sim -> out_debug.printf( "%s applying %s modifier from %s (id=%u) to %s (id=%u action=%s), value=%.5f -> %.5f",
+        a -> player -> name(),
+        modifier_str.c_str(),
+        spell -> name_cstr(),
+        spell -> id(),
+        a -> data().name_cstr(),
+        a -> data().id(),
+        a -> name(),
+        old_value,
+        new_value );
+    }
+  }
 }
+} // unnamed namespace ends
 
 void unique_gear::sort_special_effects()
 {
   std::sort( __special_effect_db.begin(), __special_effect_db.end(), cmp_special_effect );
   std::sort( __fallback_effect_db.begin(), __fallback_effect_db.end(), cmp_special_effect );
+}
+
+// Apply all label-based modifiers to an action, if the associated spell data for the application ha
+// any labels. Used by proc_action_t-derived spells (currently item special effects) to
+// automatically apply various class passives (e.g., Shaman, Enhancement Shaman, ...) to those
+// spells. System will be expanded in the future to cover a significantly larger portion of "spell
+// application interactions" between different types of objects (e.g., actors and actions).
+void unique_gear::apply_label_modifiers( action_t* a )
+{
+  if ( a -> data().label_count() == 0 )
+  {
+    return;
+  }
+
+  auto spells = dbc::class_passives( a -> player );
+  range::for_each( spells, [ a ]( const spell_data_t* spell ) { apply_spell_labels( spell, a ); } );
 }

@@ -22,7 +22,18 @@ enum artifact_trait_type
 };
 
 enum spell_mechanic {
-  MECHANIC_BLEED = 124
+  MECHANIC_CHARM = 2,
+  MECHANIC_BLIND = 10,
+  MECHANIC_DISARM = 22,
+  MECHANIC_DISORIENT = 42,
+  MECHANIC_PULL = 50,
+  MECHANIC_ROOT = 58,
+  MECHANIC_SILENCE = 72,
+  MECHANIC_DAZE = 88,
+  MECHANIC_STUN = 95,
+  MECHANIC_BLEED = 124,
+  MECHANIC_INTERRUPT = 227,
+  MECHANIC_INCAPACITATE = 255,
 };
 
 enum rppm_modifier_type_e
@@ -47,7 +58,8 @@ enum item_bonus_type
   ITEM_BONUS_REQ_LEVEL = 8,
   ITEM_BONUS_SCALING   = 11, // Scaling based on ScalingStatDistribution.db2
   ITEM_BONUS_SCALING_2 = 13, // Scaling based on ScalingStatDistribution.db2
-  ITEM_BONUS_SET_ILEVEL= 14
+  ITEM_BONUS_SET_ILEVEL= 14,
+  ITEM_BONUS_ADD_RANK  = 17, // Add artifact power rank to a specific trait
 };
 
 enum proc_types
@@ -548,7 +560,7 @@ enum property_type_t {
   P_TARGET            = 17,
   P_PROC_CHANCE       = 18, // Unconfirmed
   P_TICK_TIME         = 19, // Unknown
-  P_TARGET_BONUS      = 20, // Improved Revenge, Glyph of Chain Heal, ...
+  P_TARGET_BONUS      = 20, // Improved Revenge
   P_GCD               = 21, // Only used for flat modifiers?
   P_TICK_DAMAGE       = 22,
   P_EFFECT_3          = 23, // Glyph of Killing Spree, Glyph of Revealing Strike (both +% damage increases)
@@ -561,7 +573,7 @@ enum property_type_t {
   P_MAX               = 29,
 };
 
-enum effect_type_t {
+enum effect_type_t : unsigned {
     E_NONE = 0,
     E_INSTAKILL = 1,
     E_SCHOOL_DAMAGE = 2,
@@ -747,12 +759,14 @@ enum effect_type_t {
     E_197 = 197,
     E_198 = 198,
     E_199 = 199,
-    E_202 = 202,
+    E_APPLY_AURA_PLAYER_AND_PET = 202,
     E_203 = 203,
+    E_205 = 205,
     E_206 = 206,
     E_213 = 213,
     E_223 = 223,
     E_225 = 225,
+    E_226 = 226,
     E_230 = 230,
     E_231 = 231,
     E_236 = 236,
@@ -774,7 +788,7 @@ enum effect_type_t {
 };
 
 
-enum effect_subtype_t {
+enum effect_subtype_t : unsigned {
     A_NONE = 0,
     A_BIND_SIGHT = 1,
     A_MOD_POSSESS = 2,
@@ -993,7 +1007,7 @@ enum effect_subtype_t {
     A_ARENA_PREPARATION = 215,
     A_HASTE_SPELLS = 216,
     A_217 = 217,
-    A_HASTE_RANGED = 218,
+    A_ADD_PCT_LABEL_MODIFIER = 218,
     A_MOD_MANA_REGEN_FROM_STAT = 219,
     A_MOD_RATING_FROM_STAT = 220,
     A_221 = 221,
@@ -1172,8 +1186,8 @@ enum effect_subtype_t {
     A_410 = 410,
     A_411 = 411,
     A_412 = 412,
-    A_416 = 416,
-    A_417 = 417,
+    A_HASTED_COOLDOWN = 416,
+    A_HASTED_GCD = 417,
     A_418 = 418,
     A_419 = 419,
     A_420 = 420,
@@ -1183,7 +1197,7 @@ enum effect_subtype_t {
     A_424 = 424,
     A_426 = 426,
     A_428 = 428,
-    A_429 = 429,
+    A_MOD_PET_DAMAGE_DONE = 429,
     A_430 = 430,
     A_440 = 440,
     A_441 = 441,
@@ -1195,7 +1209,7 @@ enum effect_subtype_t {
     A_453 = 453,
     A_454 = 454,
     A_455 = 455,
-    A_457 = 457,
+    A_HASTED_CATEGORY = 457,
     A_458 = 458,
     A_463 = 463,
     A_464 = 464,

@@ -10,15 +10,27 @@
 // Enumerations =============================================================
 // annex _e to enumerations
 
+// Retargeting request event sources. Context in ACTOR_ is the actor that triggered the event
+enum retarget_event_e
+{
+  ACTOR_ARISE = 0U,     // Any actor arises
+  ACTOR_DEMISE,         // Any actor demises
+  ACTOR_INVULNERABLE,   // Actor becomes invulnerable
+  ACTOR_VULNERABLE,     // Actor becomes vulnerable (after becoming invulnerable)
+  SELF_ARISE            // Actor has arisen (no context provided)
+};
 
-// Misc (legion) related constants
+// Misc (legion related) constants
 enum
 {
-  MAX_ARTIFACT_POWER = 20, /// Maximum number of artifact perks per weapon. Looks like max is 17 on weapons but setting higher just in case -- 2016/04/04 - Twintop
+
+  MAX_ARTIFACT_POWER = 25, /// Maximum number of artifact perks per weapon. Looks like max is 17 on weapons but setting higher just in case -- 2016/04/04 - Twintop. Increase to 25 to encompass new traits.
+
   MAX_ARTIFACT_RELIC = 4,
   RELIC_ILEVEL_BONUS_CURVE = 1718, /// Seemingly hard coded CurvePoint identifier for the data that returns the item level increase of a relic, based on the relic's own item level
 
   ITEM_TRINKET_BURST_CATEGORY = 1141, /// Trinket On-Use effect default category (for shared CD)
+  MAX_GEM_SLOTS = 4, /// Global maximum number of gem slots in any specific item
 };
 
 enum regen_type_e
@@ -157,6 +169,7 @@ inline bool is_pandaren( race_e r )
 
 enum player_e
 {
+  PLAYER_SPECIAL_SCALE7 = -7,
   PLAYER_SPECIAL_SCALE6 = -6,
   PLAYER_SPECIAL_SCALE5 = -5,
   PLAYER_SPECIAL_SCALE4 = -4,
@@ -530,7 +543,10 @@ enum action_var_e
   OPERATION_FLOOR,
 
   /// Raise variable to next integer value
-  OPERATION_CEIL
+  OPERATION_CEIL,
+
+  ///Set variable to value if condition met
+  OPERATION_SETIF
 };
 
 enum school_e
@@ -659,14 +675,6 @@ enum weapon_e
   WEAPON_MAX
 };
 
-enum glyph_e
-{
-  GLYPH_MAJOR = 0,
-  GLYPH_MINOR,
-  GLYPH_PRIME,
-  GLYPH_MAX
-};
-
 enum slot_e  // these enum values match armory settings
 {
   SLOT_INVALID   = -1,
@@ -694,7 +702,7 @@ enum slot_e  // these enum values match armory settings
 };
 
 // Tiers 13..19 + PVP
-const unsigned N_TIER   = 7;
+const unsigned N_TIER   = 8;
 const unsigned MIN_TIER = 13;
 
 // Set bonus .. bonus. They map to a vector internally, so each enum value is just the vector
@@ -736,6 +744,7 @@ enum set_bonus_type_e
   T17,
   T18,
   T19,
+  T20,
 
   SET_BONUS_MAX
 };
@@ -1108,11 +1117,10 @@ enum snapshot_state_e
   STATE_AP    = 0x000004,
   STATE_SP    = 0x000008,
 
-  STATE_MUL_DA      = 0x000010,
-  STATE_MUL_TA      = 0x000020,
-  STATE_VERSATILITY = 0x000040,
-  STATE_MUL_PERSISTENT =
-      0x000080,  // Persistent modifier for the few abilities that snapshot
+  STATE_MUL_DA         = 0x000010,
+  STATE_MUL_TA         = 0x000020,
+  STATE_VERSATILITY    = 0x000040,
+  STATE_MUL_PERSISTENT = 0x000080,  // Persistent modifier for the few abilities that snapshot
 
   STATE_TGT_CRIT   = 0x000100,
   STATE_TGT_MUL_DA = 0x000200,
@@ -1127,15 +1135,19 @@ enum snapshot_state_e
   STATE_TGT_MITG_TA = 0x020000,
   STATE_TGT_ARMOR   = 0x040000,
 
-  STATE_MUL_PET     = 0x080000, // Multiplier from the owner to pet damage
-  // No multiplier helper, use in action_t::init() (after parent init) by
-  // issuing snapshot_flags &= STATE_NO_MULTIPLIER (and/or update_flags &=
-  // STATE_NO_MULTIPLIER if a dot). This disables all multipliers, including
-  // versatility, and any/all persistent multipliers the action would
-  // use.
-  STATE_NO_MULTIPLIER = ~( STATE_MUL_DA | STATE_MUL_TA | STATE_VERSATILITY |
-                           STATE_MUL_PERSISTENT | STATE_TGT_MUL_DA | STATE_MUL_PET |
-                           STATE_TGT_MUL_TA | STATE_TGT_ARMOR )
+  /// Multiplier from the owner to pet damage
+  STATE_MUL_PET = 0x080000,
+
+  /**
+   * No multiplier helper, use in action_t::init() (after parent init) by issuing snapshot_flags &= STATE_NO_MULTIPLIER
+   * (and/or update_flags &= STATE_NO_MULTIPLIER if a dot). This disables all multipliers, including versatility, and
+   * any/all persistent multipliers the action would use. */
+  STATE_NO_MULTIPLIER = ~( STATE_MUL_DA | STATE_MUL_TA | STATE_VERSATILITY | STATE_MUL_PERSISTENT | STATE_TGT_MUL_DA |
+                           STATE_MUL_PET | STATE_TGT_MUL_TA | STATE_TGT_ARMOR ),
+
+  /// Target-specific state variables
+  STATE_TARGET =
+      ( STATE_TGT_CRIT | STATE_TGT_MUL_DA | STATE_TGT_MUL_TA | STATE_TGT_ARMOR | STATE_TGT_MITG_DA | STATE_TGT_MITG_TA )
 };
 
 enum ready_e

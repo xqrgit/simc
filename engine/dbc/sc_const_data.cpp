@@ -23,77 +23,152 @@
 
 namespace { // ANONYMOUS namespace ==========================================
 
-// Global spell token map
-class spelltoken_t
-{
-private:
-  typedef std::unordered_map<unsigned int, std::string> token_map_t;
-  token_map_t map;
-  mutex_t mutex;
-
-public:
-  const std::string& get( unsigned int id_spell )
-  {
-    static const std::string empty;
-
-    auto_lock_t lock( mutex );
-
-    auto it = map.find( id_spell );
-    if ( it == map.end() )
-      return empty;
-
-    return it -> second;
-  }
-
-  unsigned int get_id( const std::string& token )
-  {
-    auto_lock_t lock( mutex );
-
-    for ( auto it = map.begin(); it != map.end(); ++it )
-      if ( it -> second == token ) return it -> first;
-
-    return 0;
-  }
-
-  bool add( unsigned int id_spell, const std::string& token_name )
-  {
-    auto_lock_t lock( mutex );
-
-    std::pair<token_map_t::iterator, bool> pr =
-      map.insert( std::make_pair( id_spell, token_name ) );
-
-    // New entry
-    if ( pr.second )
-      return true;
-
-    // Already exists with that token
-    if ( pr.first -> second == token_name )
-      return true;
-
-    // Trying to specify a new token for an existing spell id
-    return false;
-  }
-};
-spelltoken_t tokens;
-
 dbc_index_t<spell_data_t> spell_data_index;
 dbc_index_t<spelleffect_data_t> spelleffect_data_index;
 dbc_index_t<talent_data_t> talent_data_index;
 dbc_index_t<spellpower_data_t> power_data_index;
 ordered_dbc_index_t<artifact_power_rank_t> artifact_power_rank_data_index;
 
+// Wrapper class to map other data to specific spells, and also to map effects that manipulate that
+// data
+template <typename T, typename V>
+class spell_mapping_reference_t
+{
+  // Map struct T (based on id) to a set of spells
+  std::unordered_map<V, std::vector<const spell_data_t*>> m_db[2];
+  // Map struct T (based on id) to a set of effects affecting the group T
+  std::unordered_map<V, std::vector<const spelleffect_data_t*>> m_effects_db[2];
+
+  // Return the pertinent value being mapped from struct T
+  using value_fn_t = std::function<V(const T*)>;
+  // Return the spell the struct T is mapped to
+  using spell_fn_t = std::function<unsigned(const T*)>;
+  // Analyze effect data to determine whether it affects labels.
+  using effect_fn_t = std::function<V(const spelleffect_data_t*)>;
+
+  spell_fn_t spell_fn;
+  value_fn_t value_fn;
+  effect_fn_t effect_fn;
+
+public:
+  spell_mapping_reference_t( value_fn_t vfn, spell_fn_t sfn, effect_fn_t efn ) :
+    spell_fn( sfn ), value_fn( vfn ), effect_fn( efn )
+  { }
+
+  // Initialize database based on an external data entity, value function will give the key for the
+  // spell, spell function will give the identifier of the spell
+  void init_db( bool ptr = false )
+  {
+    const T* data = T::list( ptr );
+    while ( data -> id() != 0 )
+    {
+      V value = value_fn( data );
+      const auto spell = spell_data_t::find( spell_fn( data ), ptr );
+      if ( spell -> id() != spell_fn( data ) )
+      {
+        ++data;
+        continue;
+      }
+
+      add_spell( value, spell, ptr );
+
+      ++data;
+    }
+  }
+
+  // Init database based on spell data itself, value function will give the key for the spell
+  void init_db( const spell_data_t* data, bool ptr = false )
+  {
+    V value = value_fn( data );
+    if ( value != 0 )
+    {
+      add_spell( value, data, ptr );
+    }
+  }
+
+  void add_spell( V value, const spell_data_t* data, bool ptr = false )
+  {
+    m_db[ ptr ][ value ].push_back( data );
+  }
+
+  void init_effect_db( const spelleffect_data_t* effect, bool ptr = false )
+  {
+    auto value = effect_fn( effect );
+    if ( value != 0 )
+    {
+      m_effects_db[ ptr ][ value ].push_back( effect );
+    }
+  }
+
+  std::vector<const spell_data_t*> affects_spells( V value, bool ptr )
+  {
+    auto it = m_db[ ptr ].find( value );
+
+    if ( it != m_db[ ptr ].end() )
+    {
+      return it -> second;
+    }
+
+    return std::vector<const spell_data_t*>();
+  }
+
+  std::vector<const spelleffect_data_t*> affected_by( V value, bool ptr )
+  {
+    std::vector<const spelleffect_data_t*> effects;
+    auto it = m_effects_db[ ptr ].find( value );
+
+    if ( it == m_effects_db[ ptr ].end() )
+    {
+      return effects;
+    }
+
+    range::for_each( m_effects_db[ ptr ][ value ], [ &effects ]( const spelleffect_data_t* e ) {
+      effects.push_back( e );
+    } );
+
+    return effects;
+  }
+};
+
 std::vector< std::vector< const spell_data_t* > > class_family_index;
 std::vector< std::vector< const spell_data_t* > > ptr_class_family_index;
 
+// Label -> spell mappings
+spell_mapping_reference_t<spelllabel_data_t, short> spell_label_index(
+  []( const spelllabel_data_t* data ) { return data -> label(); },
+  []( const spelllabel_data_t* data ) { return data -> id_spell(); },
+  []( const spelleffect_data_t* data ) {
+    if ( data -> subtype() == A_ADD_PCT_LABEL_MODIFIER )
+    {
+      return as<short>( data -> misc_value2() );
+    }
+
+    return as<short>( 0 );
+  }
+);
+
+// Categories -> spell mappings
+spell_mapping_reference_t<spell_data_t, unsigned> spell_categories_index(
+  []( const spell_data_t* spell ) { return spell -> category(); },
+  []( const spell_data_t* spell ) { return spell -> id(); },
+  []( const spelleffect_data_t* data ) {
+    if ( data -> subtype() == A_HASTED_CATEGORY )
+    {
+      return as<unsigned>( data -> misc_value1() );
+    }
+
+    return 0U;
+  }
+);
 } // ANONYMOUS namespace ====================================================
 
 int dbc::build_level( bool ptr )
 {
-  return maybe_ptr( ptr ) ? 22995 : 22995;
+  return maybe_ptr( ptr ) ? 24461 : 24461;
 }
 
 const char* dbc::wow_version( bool ptr )
-{ return maybe_ptr( ptr ) ? "7.1.0" : "7.1.0"; }
+{ return maybe_ptr( ptr ) ? "7.2.5" : "7.2.5"; }
 
 const char* dbc::wow_ptr_status( bool ptr )
 #if SC_BETA
@@ -186,8 +261,12 @@ void dbc::init()
 #endif
 
   generate_class_flags_index();
+  spell_label_index.init_db();
   if ( SC_USE_PTR )
+  {
     generate_class_flags_index( true );
+    spell_label_index.init_db( true );
+  }
 }
 
 /* De-Initialize database
@@ -265,6 +344,75 @@ std::vector< const spell_data_t* > dbc_t::effect_affects_spells( unsigned family
   }
 
   return affected_spells;
+}
+
+std::vector<const spelleffect_data_t*> dbc_t::effect_labels_affecting_spell( const spell_data_t* spell ) const
+{
+  auto labels = spell -> labels();
+  std::vector<const spelleffect_data_t*> effects;
+
+  range::for_each( labels, [ &effects, this ]( short label ) {
+    auto label_effects = spell_label_index.affected_by( label, ptr );
+
+    // Add all effects affecting a specific label to the vector containing all the effects, if the
+    // effect is not yet in the vector.
+    range::for_each( label_effects, [ &effects ]( const spelleffect_data_t* data ) {
+      auto it = range::find_if( effects, [ data ]( const spelleffect_data_t* effect ) {
+        return effect -> id() == data -> id();
+      } );
+
+      if ( it == effects.end() )
+      {
+        effects.push_back( data );
+      }
+    } );
+  } );
+
+  return effects;
+}
+
+std::vector<const spelleffect_data_t*> dbc_t::effect_labels_affecting_label( short label ) const
+{
+  std::vector<const spelleffect_data_t*> effects;
+
+  auto label_effects = spell_label_index.affected_by( label, ptr );
+
+  // Add all effects affecting a specific label to the vector containing all the effects, if the
+  // effect is not yet in the vector.
+  range::for_each( label_effects, [ &effects ]( const spelleffect_data_t* data ) {
+    auto it = range::find_if( effects, [ data ]( const spelleffect_data_t* effect ) {
+      return effect -> id() == data -> id();
+    } );
+
+    if ( it == effects.end() )
+    {
+      effects.push_back( data );
+    }
+  } );
+
+  return effects;
+}
+
+std::vector<const spelleffect_data_t*> dbc_t::effect_categories_affecting_spell( const spell_data_t* spell ) const
+{
+  std::vector<const spelleffect_data_t*> effects;
+
+  auto category_effects = spell_categories_index.affected_by( spell -> category(), ptr );
+
+  // Add all effects affecting a specific label to the vector containing all the effects, if the
+  // effect is not yet in the vector.
+  range::for_each( category_effects, [ &effects ]( const spelleffect_data_t* data ) {
+    auto it = range::find_if( effects, [ data ]( const spelleffect_data_t* effect ) {
+      return effect -> id() == data -> id();
+    } );
+
+    if ( it == effects.end() )
+    {
+      effects.push_back( data );
+    }
+  } );
+
+  return effects;
 }
 
 std::vector< const spelleffect_data_t* > dbc_t::effects_affecting_spell( const spell_data_t* spell ) const
@@ -651,36 +799,6 @@ specialization_e dbc::spec_by_idx( const player_e c, unsigned idx )
   return __class_spec_id[ cid ][ idx ];
 }
 
-const std::string& dbc::get_token( unsigned int id_spell )
-{
-  return tokens.get( id_spell );
-}
-
-
-bool dbc::add_token( unsigned int id_spell, const std::string& token, bool ptr )
-{
-  spell_data_t* sp = spell_data_index.get( ptr, id_spell );
-  if ( sp && sp -> ok() )
-  {
-    if ( ! token.empty() )
-    {
-      return tokens.add( id_spell, token );
-    }
-    else
-    {
-      std::string t = sp -> name_cstr();
-      util::tokenize( t );
-      return tokens.add( id_spell, t );
-    }
-  }
-  return false;
-}
-
-unsigned int dbc::get_token_id( const std::string& token )
-{
-  return tokens.get_id( token );
-}
-
 uint32_t dbc::get_school_mask( school_e s )
 {
   switch ( s )
@@ -767,6 +885,79 @@ bool dbc::is_school( school_e s, school_e s2 )
   return ( get_school_mask( s ) & mask2 ) == mask2;
 }
 
+std::vector<const spell_data_t*> dbc::class_passives( const player_t* p )
+{
+  struct entry_t
+  {
+    player_e         type;
+    specialization_e spec;
+    unsigned         spell_id;
+  };
+
+  static const std::vector<entry_t> ids {
+    { DEATH_KNIGHT, SPEC_NONE,              137005 },
+    { DEATH_KNIGHT, DEATH_KNIGHT_BLOOD,     137008 },
+    { DEATH_KNIGHT, DEATH_KNIGHT_UNHOLY,    137007 },
+    { DEATH_KNIGHT, DEATH_KNIGHT_FROST,     137006 },
+    { DEMON_HUNTER, SPEC_NONE,              212611 },
+    { DEMON_HUNTER, DEMON_HUNTER_HAVOC,     212612 },
+    { DEMON_HUNTER, DEMON_HUNTER_VENGEANCE, 212613 },
+    { DRUID,        SPEC_NONE,              137009 },
+    { DRUID,        DRUID_RESTORATION,      137012 },
+    { DRUID,        DRUID_FERAL,            137011 },
+    { DRUID,        DRUID_BALANCE,          137013 },
+    { DRUID,        DRUID_GUARDIAN,         137010 },
+    { HUNTER,       SPEC_NONE,              137014 },
+    { HUNTER,       HUNTER_SURVIVAL,        137017 },
+    { HUNTER,       HUNTER_MARKSMANSHIP,    137016 },
+    { HUNTER,       HUNTER_BEAST_MASTERY,   137015 },
+    { MAGE,         SPEC_NONE,              137018 },
+    { MAGE,         MAGE_ARCANE,            137021 },
+    { MAGE,         MAGE_FIRE,              137019 },
+    { MAGE,         MAGE_FROST,             137020 },
+    { MONK,         SPEC_NONE,              137022 },
+    { MONK,         MONK_BREWMASTER,        137023 },
+    { MONK,         MONK_MISTWEAVER,        137024 },
+    { MONK,         MONK_WINDWALKER,        137025 },
+    { PALADIN,      SPEC_NONE,              137026 },
+    { PALADIN,      PALADIN_HOLY,           137029 },
+    { PALADIN,      PALADIN_PROTECTION,     137028 },
+    { PALADIN,      PALADIN_RETRIBUTION,    137027 },
+    { PRIEST,       SPEC_NONE,              137030 },
+    { PRIEST,       PRIEST_SHADOW,          137033 },
+    { PRIEST,       PRIEST_HOLY,            137031 },
+    { PRIEST,       PRIEST_DISCIPLINE,      137032 },
+    { ROGUE,        SPEC_NONE,              137034 },
+    { ROGUE,        ROGUE_OUTLAW,           137036 },
+    { ROGUE,        ROGUE_SUBTLETY,         137035 },
+    { ROGUE,        ROGUE_ASSASSINATION,    137037 },
+    { SHAMAN,       SPEC_NONE,              137038 },
+    { SHAMAN,       SHAMAN_ELEMENTAL,       137040 },
+    { SHAMAN,       SHAMAN_ENHANCEMENT,     137041 },
+    { SHAMAN,       SHAMAN_RESTORATION,     137039 },
+    { WARLOCK,      SPEC_NONE,              137042 },
+    { WARLOCK,      WARLOCK_AFFLICTION,     137043 },
+    { WARLOCK,      WARLOCK_DEMONOLOGY,     137044 },
+    { WARLOCK,      WARLOCK_DESTRUCTION,    137046 },
+    { WARRIOR,      SPEC_NONE,              137047 },
+    { WARRIOR,      WARRIOR_ARMS,           137049 },
+    { WARRIOR,      WARRIOR_FURY,           137050 },
+    { WARRIOR,      WARRIOR_PROTECTION,     137048 },
+  };
+
+  std::vector<const spell_data_t*> spells;
+
+  range::for_each( ids, [ &spells, p ]( const entry_t& entry ) {
+
+    if ( entry.type != p -> type ) return;
+    if ( entry.spec != SPEC_NONE && entry.spec != p -> specialization() ) return;
+
+    spells.push_back( p -> find_spell( entry.spell_id ) );
+  } );
+
+  return spells;
+}
+
 uint32_t dbc_t::replaced_id( uint32_t id_spell ) const
 {
   auto it = replaced_ids.find( id_spell );
@@ -793,12 +984,12 @@ bool dbc_t::replace_id( uint32_t id_spell, uint32_t replaced_by_id )
 double dbc_t::combat_rating_multiplier( unsigned item_level, combat_rating_multiplier_type type ) const
 {
   assert( item_level > 0 && item_level <= MAX_ILEVEL );
-#if SC_USE_PTR
   assert( type < CR_MULTIPLIER_MAX );
+#if SC_USE_PTR
   return ptr ? _ptr__combat_ratings_mult_by_ilvl[ type ][ item_level - 1 ]
-    : __combat_ratings_mult_by_ilvl[ item_level - 1 ];
+             : __combat_ratings_mult_by_ilvl[type][ item_level - 1 ];
 #else
-  return __combat_ratings_mult_by_ilvl[ item_level - 1 ];
+  return __combat_ratings_mult_by_ilvl[type][ item_level - 1 ];
 #endif
 }
 
@@ -1175,20 +1366,6 @@ unsigned dbc_t::mastery_ability( unsigned class_id, unsigned specialization, uns
 #endif
 }
 
-unsigned dbc_t::glyph_spell( unsigned /* class_id */, unsigned /* glyph_e */, unsigned /* n */ ) const
-{
-  return 0;
-/*
-  assert( class_id < dbc_t::class_max_size() && glyph_e < GLYPH_MAX && n < glyph_spell_size() );
-#if SC_USE_PTR
-  return ptr ? __ptr_glyph_abilities_data[ class_id ][ glyph_e ][ n ]
-             : __glyph_abilities_data[ class_id ][ glyph_e ][ n ];
-#else
-  return __glyph_abilities_data[ class_id ][ glyph_e ][ n ];
-#endif
-*/
-}
-
 unsigned dbc_t::class_max_size() const
 {
   return MAX_CLASS;
@@ -1260,18 +1437,6 @@ unsigned dbc_t::mastery_ability_size() const
 #else
   return CLASS_MASTERY_ABILITY_SIZE;
 #endif
-}
-
-unsigned dbc_t::glyph_spell_size() const
-{
-  return 0;
-/*
-#if SC_USE_PTR
-  return ptr ? PTR_GLYPH_ABILITIES_SIZE : GLYPH_ABILITIES_SIZE;
-#else
-  return GLYPH_ABILITIES_SIZE;
-#endif
-*/
 }
 
 std::vector<const rppm_modifier_t*> dbc_t::real_ppm_modifiers( unsigned spell_id ) const
@@ -1443,15 +1608,16 @@ double spelleffect_data_t::average( const player_t* p, unsigned level ) const
 
 double spelleffect_data_t::average( const item_t* item ) const
 {
-  double m_scale = 0;
-
   if ( ! item )
     return 0;
 
-  if ( _m_avg != 0 && _spell -> scaling_class() != 0 )
-    m_scale = item_database::item_budget( item, _spell -> max_scaling_level() );
+  auto budget = item_database::item_budget( item, _spell -> max_scaling_level() );
+  if ( _spell -> scaling_class() == PLAYER_SPECIAL_SCALE7 )
+  {
+    budget = item_database::apply_combat_rating_multiplier( *item, budget );
+  }
 
-  return scaled_average( m_scale, item -> item_level() );
+  return _m_avg * budget;
 }
 
 double dbc_t::item_socket_cost( unsigned ilevel ) const
@@ -1508,8 +1674,13 @@ double spelleffect_data_t::delta( const item_t* item ) const
   if ( ! item )
     return 0;
 
-  if ( _m_delta != 0 && _spell -> scaling_class() != 0 )
+  if ( _m_delta != 0 )
     m_scale = item_database::item_budget( item, _spell -> max_scaling_level() );
+
+  if ( _spell -> scaling_class() == PLAYER_SPECIAL_SCALE7 )
+  {
+    m_scale = item_database::apply_combat_rating_multiplier( *item, m_scale );
+  }
 
   return scaled_delta( m_scale );
 }
@@ -1585,8 +1756,6 @@ double spelleffect_data_t::min( const player_t* p, unsigned level ) const
 
 double spelleffect_data_t::min( const item_t* item ) const
 {
-  assert( _spell -> scaling_class() == 0 || _spell -> scaling_class() == -1 );
-
   return scaled_min( average( item ), delta( item ) );
 }
 
@@ -1599,8 +1768,6 @@ double spelleffect_data_t::max( const player_t* p, unsigned level ) const
 
 double spelleffect_data_t::max( const item_t* item ) const
 {
-  assert( _spell -> scaling_class() == 0 || _spell -> scaling_class() == -1 );
-
   return scaled_max( average( item ), delta( item ) );
 }
 
@@ -1750,6 +1917,22 @@ void spell_data_t::link( bool ptr )
   {
     spell_data_t& sd = spell_data[ i ];
     sd._effects = new std::vector<const spelleffect_data_t*>;
+
+    spell_categories_index.init_db( &( sd ), ptr );
+  }
+
+  auto label = spelllabel_data_t::list( ptr );
+  while ( label -> id() )
+  {
+    auto spell = spell_data_t::find( label -> id_spell(), ptr );
+    if ( spell -> _labels == nullptr )
+    {
+      spell -> _labels = new std::vector<const spelllabel_data_t*>();
+    }
+
+    spell -> _labels -> push_back( label );
+
+    ++label;
   }
 }
 
@@ -1779,6 +1962,12 @@ void spelleffect_data_t::link( bool ptr )
       ed._spell -> _effects -> resize( ed.index() + 1, spelleffect_data_t::nil() );
 
     ed._spell -> _effects -> at( ed.index() ) = &ed;
+
+    // Some effects are going to be affecting labels, so map spells here
+    spell_label_index.init_effect_db( &( ed ), ptr );
+
+    // Some effects are going to be affecting categories, so map spells here
+    spell_categories_index.init_effect_db( &( ed ), ptr );
   }
 }
 
@@ -1790,17 +1979,10 @@ void spell_data_t::de_link( bool ptr )
   {
     spell_data_t& sd = spell_data[ i ];
 
-    if ( sd._effects )
-    {
-      // delete dynamically allocated vector with spelleffect_data_t pointers
-      delete sd._effects;
-    }
-    if ( sd._power )
-    {
-      // delete dynamically allocated vector with spellpower_data_t pointers
-      delete sd._power;
-    }
+    delete sd._effects;
+    delete sd._power;
     delete sd._driver;
+    delete sd._labels;
   }
 }
 
@@ -2270,70 +2452,6 @@ bool dbc_t::ability_specialization( uint32_t spell_id, std::vector<specializatio
   return ! spec_list.empty();
 }
 
-unsigned dbc_t::glyph_spell_id( unsigned /* property_id */ ) const
-{
-/*
-#if SC_USE_PTR
-  const glyph_property_data_t* table = ptr ? &__ptr_glyph_property_data[0] : &__glyph_property_data[0];
-#else
-  const glyph_property_data_t* table = &__glyph_property_data[0];
-#endif
-
-  while ( table -> id != 0 )
-  {
-    if ( table -> id == property_id )
-      return table -> spell_id;
-    table++;
-  }
-*/
-  return 0;
-}
-
-unsigned dbc_t::glyph_spell_id( player_e /* c */, const char* /* spell_name */ ) const
-{
-/*
-  unsigned cid = util::class_id( c );
-  unsigned spell_id;
-  std::string token, token2;
-
-  if ( ! spell_name || ! *spell_name )
-    return 0;
-
-  token = spell_name;
-  util::glyph_name( token );
-
-  for ( unsigned type = 0; type < GLYPH_MAX; type++ )
-  {
-    for ( unsigned n = 0; n < glyph_spell_size(); n++ )
-    {
-      if ( ! ( spell_id = glyph_spell( cid, type, n ) ) )
-        break;
-
-      if ( ! spell( spell_id ) -> id() )
-        continue;
-
-      token2 = spell( spell_id ) -> name_cstr();
-      util::glyph_name( token2 );
-
-      if ( util::str_compare_ci( spell( spell_id ) -> name_cstr(), spell_name ) ||
-           util::str_compare_ci( token2, token ) )
-      {
-        // Spell has been replaced by another, so don't return id
-        if ( ! replaced_id( spell_id ) )
-        {
-          return spell_id;
-        }
-        else
-        {
-          return 0;
-        }
-      }
-    }
-  }
-*/
-  return 0;
-}
-
 unsigned dbc_t::mastery_ability_id( specialization_e spec, const char* spell_name ) const
 {
   unsigned class_idx = -1;
@@ -2442,23 +2560,6 @@ bool dbc_t::is_specialization_ability( uint32_t spell_id ) const
       for ( unsigned n = 0; n < specialization_ability_size(); n++ )
       {
         if ( specialization_ability( cls, tree, n ) == spell_id )
-          return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-bool dbc_t::is_glyph_spell( uint32_t spell_id ) const
-{
-  for ( unsigned cls = 0; cls < dbc_t::class_max_size(); cls++ )
-  {
-    for ( unsigned glyph_type = 0; glyph_type < GLYPH_MAX; glyph_type++ )
-    {
-      for ( unsigned n = 0; n < glyph_spell_size(); n++ )
-      {
-        if ( glyph_spell( cls, glyph_type, n ) == spell_id )
           return true;
       }
     }
@@ -2649,6 +2750,26 @@ unsigned dbc_t::artifact_by_spec( specialization_e spec ) const
   return 0;
 }
 
+const artifact_power_data_t* dbc_t::artifact_power( unsigned power_id ) const
+{
+#if SC_USE_PTR
+  const artifact_power_data_t * p = ptr ? __ptr_artifact_power_data : __artifact_power_data;
+#else
+  const artifact_power_data_t * p = __artifact_power_data;
+#endif
+
+  while ( p -> id != 0 )
+  {
+    if ( p -> id == power_id )
+    {
+      return p;
+    }
+    p++;
+  }
+
+  return nullptr;
+}
+
 std::vector<const artifact_power_data_t*> dbc_t::artifact_powers( unsigned artifact_id ) const
 {
   std::vector<const artifact_power_data_t*> powers;
@@ -2780,6 +2901,16 @@ std::pair<unsigned, unsigned> dbc_t::artifact_relic_rank_index( unsigned artifac
   return { ( *power_it ) -> id, amount };
 }
 
+std::vector<const spell_data_t*> dbc_t::spells_by_label( size_t label ) const
+{
+  return spell_label_index.affects_spells( as<unsigned>( label ), ptr );
+}
+
+std::vector<const spell_data_t*> dbc_t::spells_by_category( unsigned category ) const
+{
+  return spell_categories_index.affects_spells( category, ptr );
+}
+
 // Hotfix data handling
 
 
@@ -2909,5 +3040,16 @@ void hotfix::link_hotfix_data( bool ptr )
 
   // Next, link artifact hotfix data
   link_hotfix_entry_ptr<artifact_power_rank_t>( ptr, artifact_hotfix_entry );
+}
+
+const spelllabel_data_t* spelllabel_data_t::list( bool ptr )
+{
+#if SC_USE_PTR
+  return ptr ? __ptr_spelllabel_data
+             : __spelllabel_data;
+#else
+  (void ) ptr;
+  return __spelllabel_data;
+#endif
 }
 

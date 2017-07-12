@@ -86,20 +86,20 @@ void print_raw_action_damage( report::sc_html_stream& os, const stats_t& s,
                direct_total / s.player->collected_data.fight_length.mean(),
                s.num_direct_results.mean() /
                    ( s.player->collected_data.fight_length.mean() / 60.0 ),
-               s.direct_results[ RESULT_HIT ].actual_amount.mean(),
-               s.direct_results[ RESULT_CRIT ].actual_amount.mean(),
+               s.direct_results[ FULLTYPE_HIT ].actual_amount.mean(),
+               s.direct_results[ FULLTYPE_CRIT ].actual_amount.mean(),
                s.num_executes.mean(), s.num_direct_results.mean(),
-               s.direct_results[ RESULT_CRIT ].pct,
-               s.direct_results[ RESULT_MISS ].pct +
-                   s.direct_results[ RESULT_DODGE ].pct +
-                   s.direct_results[ RESULT_PARRY ].pct,
-               s.direct_results[ RESULT_GLANCE ].pct,
-               s.direct_results_detail[ FULLTYPE_HIT_BLOCK ].pct +
-                   s.direct_results_detail[ FULLTYPE_HIT_CRITBLOCK ].pct +
-                   s.direct_results_detail[ FULLTYPE_GLANCE_BLOCK ].pct +
-                   s.direct_results_detail[ FULLTYPE_GLANCE_CRITBLOCK ].pct +
-                   s.direct_results_detail[ FULLTYPE_CRIT_BLOCK ].pct +
-                   s.direct_results_detail[ FULLTYPE_CRIT_CRITBLOCK ].pct,
+               s.direct_results[ FULLTYPE_CRIT ].pct,
+               s.direct_results[ FULLTYPE_MISS ].pct +
+                   s.direct_results[ FULLTYPE_DODGE ].pct +
+                   s.direct_results[ FULLTYPE_PARRY ].pct,
+               s.direct_results[ FULLTYPE_GLANCE ].pct,
+               s.direct_results[ FULLTYPE_HIT_BLOCK ].pct +
+                   s.direct_results[ FULLTYPE_HIT_CRITBLOCK ].pct +
+                   s.direct_results[ FULLTYPE_GLANCE_BLOCK ].pct +
+                   s.direct_results[ FULLTYPE_GLANCE_CRITBLOCK ].pct +
+                   s.direct_results[ FULLTYPE_CRIT_BLOCK ].pct +
+                   s.direct_results[ FULLTYPE_CRIT_CRITBLOCK ].pct,
                s.total_intervals.mean(), s.total_amount.mean(),
                s.player->collected_data.fight_length.mean() );
   }
@@ -123,12 +123,7 @@ void print_raw_action_damage( report::sc_html_stream& os, const stats_t& s,
         s.tick_results[ RESULT_MISS ].pct + s.tick_results[ RESULT_DODGE ].pct +
             s.tick_results[ RESULT_PARRY ].pct,
         s.tick_results[ RESULT_GLANCE ].pct,
-        s.tick_results_detail[ FULLTYPE_HIT_BLOCK ].pct +
-            s.tick_results_detail[ FULLTYPE_HIT_CRITBLOCK ].pct +
-            s.tick_results_detail[ FULLTYPE_GLANCE_BLOCK ].pct +
-            s.tick_results_detail[ FULLTYPE_GLANCE_CRITBLOCK ].pct +
-            s.tick_results_detail[ FULLTYPE_CRIT_BLOCK ].pct +
-            s.tick_results_detail[ FULLTYPE_CRIT_CRITBLOCK ].pct,
+        0,
         s.total_intervals.mean(), s.total_amount.mean(),
         s.player->collected_data.fight_length.mean() );
   }
@@ -765,7 +760,7 @@ void print_html_scale_factors( report::sc_html_stream& os, const sim_t& sim )
     // add the absolute value of their stat weights to accumulator element
     for ( stat_e j = STAT_NONE; j < STAT_MAX; j++ )
     {
-      stat_effect_is_nonzero[ j ] += std::abs( p->scaling[ sm ].get_stat( j ) );
+      stat_effect_is_nonzero[ j ] += std::abs( p->scaling->scaling[ sm ].get_stat( j ) );
     }
   }
   // end column suppression section
@@ -815,14 +810,14 @@ void print_html_scale_factors( report::sc_html_stream& os, const sim_t& sim )
       if ( sim.scaling->stats.get_stat( j ) != 0 &&
            stat_effect_is_nonzero[ j ] > 0 )
       {
-        if ( p->scaling[ sm ].get_stat( j ) == 0 )
+        if ( p->scaling->scaling[ sm ].get_stat( j ) == 0 )
         {
           os << "<td class=\"small\">-</td>\n";
         }
         else
         {
           os.format( "<td class=\"small\">%.*f</td>\n", sim.report_precision,
-                     p->scaling[ sm ].get_stat( j ) );
+                     p->scaling->scaling[ sm ].get_stat( j ) );
         }
       }
     }
@@ -1405,6 +1400,8 @@ void print_html_( report::sc_html_stream& os, sim_t& sim )
     }
   }
 
+  sim.profilesets.output( sim, os );
+
   print_html_sim_summary( os, sim );
 
   if ( sim.report_raw_abilities )
@@ -1440,7 +1437,7 @@ void print_html_( report::sc_html_stream& os, sim_t& sim )
   if ( sim.decorated_tooltips )
   {
     os << "<script type=\"text/javascript\" "
-          "src=\"http://static-azeroth.cursecdn.com/current/js/syndication/"
+          "src=\"https://static-azeroth.cursecdn.com/current/js/syndication/"
           "tt.js\"></script>\n";
   }
 
@@ -1513,6 +1510,10 @@ void print_html( sim_t& sim )
     return;
 
   Timer t( "html report" );
+  if ( ! sim.profileset_enabled )
+  {
+    t.start();
+  }
 
   // Setup file stream and open file
   report::sc_html_stream s;

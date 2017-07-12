@@ -1,11 +1,11 @@
 warrior="Warrior_Protection_T19M"
+spec=protection
 level=110
 race=tauren
 role=tank
 position=front
 talents=1222312
 artifact=11:0:0:0:0:91:1:92:1:93:1:94:1:95:3:96:3:97:1:98:3:99:3:100:3:101:3:102:3:103:1:104:1:105:3:106:3:1358:1
-spec=protection
 
 # This default action priority list is automatically created based on your character.
 # It is a attempt to provide you with a action list that is both simple and practicable,
@@ -14,7 +14,7 @@ spec=protection
 # SimulationCraft is always looking for updates and improvements to the default action lists.
 
 # Executed before combat begins. Accepts non-harmful actions only.
-actions.precombat=flask,type=countless_armies
+actions.precombat=flask,type=ten_thousand_scars
 actions.precombat+=/food,type=azshari_salad
 actions.precombat+=/augmentation,type=defiled
 # Snapshot raid buffed stats before combat begins and pre-potting is done.
@@ -30,20 +30,19 @@ actions+=/arcane_torrent
 actions+=/call_action_list,name=prot
 
 actions.prot=spell_reflection,if=incoming_damage_2500ms>health.max*0.20
-actions.prot+=/demoralizing_shout,if=incoming_damage_2500ms>health.max*0.20
-actions.prot+=/last_stand,if=incoming_damage_2500ms>health.max*0.50
-actions.prot+=/shield_wall,if=incoming_damage_2500ms>health.max*0.50&!cooldown.last_stand.remains=0
+actions.prot+=/demoralizing_shout,if=incoming_damage_2500ms>health.max*0.20&!talent.booming_voice.enabled
+actions.prot+=/last_stand,if=incoming_damage_2500ms>health.max*0.40
+actions.prot+=/shield_wall,if=incoming_damage_2500ms>health.max*0.40&!cooldown.last_stand.remains=0
 actions.prot+=/potion,name=unbending_potion,if=(incoming_damage_2500ms>health.max*0.15&!buff.potion.up)|target.time_to_die<=25
 actions.prot+=/battle_cry,if=cooldown.shield_slam.remains=0
 actions.prot+=/demoralizing_shout,if=talent.booming_voice.enabled&buff.battle_cry.up
 actions.prot+=/ravager,if=talent.ravager.enabled&buff.battle_cry.up
-actions.prot+=/neltharions_fury,if=!buff.shield_block.up&cooldown.shield_block.remains>3&cooldown.shield_slam.remains>3
-actions.prot+=/shield_block,if=!buff.neltharions_fury.up&(cooldown.shield_slam.remains=0|action.shield_block.charges=2)
-actions.prot+=/shield_slam,if=!(cooldown.shield_block.remains<=gcd.max*2&!buff.shield_block.up&talent.heavy_repercussions.enabled)
-actions.prot+=/revenge,if=cooldown.shield_slam.remains<=gcd.max*1.5|spell_targets.revenge>=2
-actions.prot+=/ignore_pain,if=(rage>=60&!talent.vengeance.enabled)|(buff.vengeance_ignore_pain.up&rage>=39)|(talent.vengeance.enabled&!buff.ultimatum.up&!buff.vengeance_ignore_pain.up&!buff.vengeance_focused_rage.up&rage<30)
-actions.prot+=/focused_rage,if=(buff.vengeance_focused_rage.up&!buff.vengeance_ignore_pain.up&rage>=59)|(buff.ultimatum.up&!buff.vengeance_ignore_pain.up)|(talent.vengeance.enabled&!buff.vengeance_ignore_pain.up&!buff.vengeance_focused_rage.up&rage>=69)|(rage>=100)
-actions.prot+=/thunder_clap,if=spell_targets.thunder_clap>=4
+actions.prot+=/neltharions_fury,if=!buff.shield_block.up&cooldown.shield_block.remains>3&((cooldown.shield_slam.remains>3&talent.heavy_repercussions.enabled)|(!talent.heavy_repercussions.enabled))
+actions.prot+=/shield_block,if=!buff.neltharions_fury.up&((cooldown.shield_slam.remains=0&talent.heavy_repercussions.enabled)|action.shield_block.charges=2|!talent.heavy_repercussions.enabled)
+actions.prot+=/ignore_pain,if=(rage>=60&!talent.vengeance.enabled)|(buff.vengeance_ignore_pain.up&rage>=39)|(talent.vengeance.enabled&!buff.vengeance_ignore_pain.up&!buff.vengeance_revenge.up&rage<30&!buff.revenge.react)
+actions.prot+=/shield_slam,if=(!(cooldown.shield_block.remains<=gcd.max*2&!buff.shield_block.up)&talent.heavy_repercussions.enabled)|!talent.heavy_repercussions.enabled
+actions.prot+=/thunder_clap
+actions.prot+=/revenge,if=(talent.vengeance.enabled&buff.revenge.react&!buff.vengeance_ignore_pain.up)|(buff.vengeance_revenge.up&rage>=59)|(talent.vengeance.enabled&!buff.vengeance_ignore_pain.up&!buff.vengeance_revenge.up&rage>=69)|(!talent.vengeance.enabled&buff.revenge.react)
 actions.prot+=/devastate
 
 head=venomfanged_barbute,id=139229,bonus_id=1502/1806
@@ -65,10 +64,10 @@ off_hand=scale_of_the_earthwarder,id=128289,gem_id=139261/139257/139256,relic_id
 
 # Gear Summary
 # gear_ilvl=882.31
-# gear_strength=16053
-# gear_stamina=25675
-# gear_crit_rating=3044
-# gear_haste_rating=6079
-# gear_mastery_rating=8324
-# gear_versatility_rating=2090
+# gear_strength=16842
+# gear_stamina=26955
+# gear_crit_rating=3447
+# gear_haste_rating=6749
+# gear_mastery_rating=9254
+# gear_versatility_rating=2364
 # gear_armor=4323

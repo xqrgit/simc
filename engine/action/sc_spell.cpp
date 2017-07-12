@@ -5,22 +5,6 @@
 
 #include "simulationcraft.hpp"
 
-namespace {
-
-struct aoe_player_list_callback_t
-{
-  action_t* action;
-  aoe_player_list_callback_t( action_t* a ) : action( a ) {}
-
-  void operator()(player_t*)
-  {
-    // Invalidate target cache
-    action -> target_cache.is_valid = false;
-  }
-};
-
-} // unnamed namespace
-
 // ==========================================================================
 // Spell Base
 // ==========================================================================
@@ -33,7 +17,7 @@ spell_base_t::spell_base_t( action_e at,
   procs_courageous_primal_diamond( true )
 {
   min_gcd = p -> min_gcd;
-  gcd_haste = HASTE_SPELL; // Hasten spell GCDs by default
+  gcd_haste = SPEED_SPELL; // Hasten spell GCDs by default
   //min_gcd = timespan_t::from_seconds( 1.0 );
   hasted_ticks = true;
   special = true;
@@ -242,10 +226,11 @@ heal_t::heal_t( const std::string&  token,
   }
 }
 
-void heal_t::init_target_cache()
+void heal_t::activate()
 {
-  if ( aoe )
-    sim -> player_non_sleeping_list.register_callback( aoe_player_list_callback_t( this ) );
+  sim -> player_non_sleeping_list.register_callback( [ this ]( player_t* ) {
+    target_cache.is_valid = false;
+  } );
 }
 
 // heal_t::parse_effect_data ================================================
@@ -634,10 +619,11 @@ absorb_t::absorb_t( const std::string&  token,
   stats -> type = STATS_ABSORB;
 }
 
-void absorb_t::init_target_cache()
+void absorb_t::activate()
 {
-  if ( aoe )
-    sim -> player_non_sleeping_list.register_callback( aoe_player_list_callback_t( this ) );
+  sim -> player_non_sleeping_list.register_callback( [ this ]( player_t* ) {
+    target_cache.is_valid = false;
+  } );
 }
 
 // absorb_t::execute ========================================================
@@ -651,6 +637,7 @@ void absorb_t::execute()
 
 void absorb_t::impact( action_state_t* s )
 {
+  s -> result_amount = calculate_crit_damage_bonus( s );
   assess_damage( type == ACTION_HEAL ? HEAL_DIRECT : DMG_DIRECT, s );
 }
 

@@ -16,6 +16,7 @@
 
 struct spell_data_t;
 struct spelleffect_data_t;
+struct spellpower_data_t;
 struct talent_data_t;
 
 struct item_child_equipment_t
@@ -242,7 +243,7 @@ struct item_data_t {
   int      id_socket_bonus;
   int      id_set;
   int      id_suffix_group;
-  unsigned id_scaling_distribution;
+  int      id_scaling_distribution;
   unsigned id_artifact;
 
   bool is_armor()
@@ -283,10 +284,6 @@ struct gem_property_data_t {
   unsigned min_ilevel;
 };
 
-struct glyph_property_data_t {
-  unsigned id;
-  unsigned spell_id;
-};
 
 #ifdef __OpenBSD__
 #pragma pack()

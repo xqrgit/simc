@@ -90,16 +90,14 @@ bool item_t::socket_color_match() const
 
 bool item_t::has_special_effect( special_effect_source_e source, special_effect_e type ) const
 {
-  return special_effect( source, type ).source != SPECIAL_EFFECT_SOURCE_NONE;
+  return special_effect( source, type ) != nullptr;
 }
 
 
 // item_t::special_effect ===================================================
 
-const special_effect_t& item_t::special_effect( special_effect_source_e source, special_effect_e type ) const
+const special_effect_t* item_t::special_effect( special_effect_source_e source, special_effect_e type ) const
 {
-  static special_effect_t nonevalue( this );
-
   // Note note returns first available, but odds that there are several on-
   // equip enchants in an item is slim to none
   for ( size_t i = 0; i < parsed.special_effects.size(); i++ )
@@ -107,11 +105,11 @@ const special_effect_t& item_t::special_effect( special_effect_source_e source, 
     if ( ( source == SPECIAL_EFFECT_SOURCE_NONE || parsed.special_effects[ i ] -> source == source ) &&
          ( type == SPECIAL_EFFECT_NONE || type == parsed.special_effects[ i ] -> type ) )
     {
-      return *parsed.special_effects[ i ];
+      return parsed.special_effects[ i ];
     }
   }
 
-  return nonevalue;
+  return nullptr;
 }
 
 gear_stats_t item_t::total_stats() const
@@ -664,6 +662,7 @@ bool item_t::parse_options()
   options.push_back(opt_string("initial_cd", option_initial_cd_str));
   options.push_back(opt_string("drop_level", option_drop_level_str));
   options.push_back(opt_string("relic_id", option_relic_id_str));
+  options.push_back(opt_string("relic_ilevel", option_relic_ilevel_str));
 
   try
   {
@@ -694,7 +693,7 @@ bool item_t::parse_options()
 
   if ( ! option_gem_id_str.empty() )
   {
-    std::vector<std::string> spl = util::string_split( option_gem_id_str, "/" );
+    std::vector<std::string> spl = util::string_split( option_gem_id_str, ":/" );
     for ( size_t i = 0, end = std::min( sizeof_array( parsed.gem_id ), spl.size() ); i < end; i++ )
     {
       unsigned gem_id = util::to_unsigned( spl[ i ] );
@@ -728,6 +727,22 @@ bool item_t::parse_options()
 
   }
 
+  if ( ! option_relic_ilevel_str.empty() )
+  {
+    auto split = util::string_split( option_relic_ilevel_str, "/:" );
+    auto relic_idx = 0U;
+    for ( const auto& ilevel_str : split )
+    {
+      auto ilevel = util::to_int( ilevel_str );
+      if ( ilevel >= 0 && ilevel < MAX_ILEVEL )
+      {
+        parsed.relic_ilevel[ relic_idx ] = ilevel;
+      }
+
+      ++relic_idx;
+    }
+  }
+
   if ( ! option_enchant_id_str.empty() )
     parsed.enchant_id = util::to_unsigned( option_enchant_id_str );
 
@@ -736,7 +751,7 @@ bool item_t::parse_options()
 
   if ( ! option_bonus_id_str.empty() )
   {
-    std::vector<std::string> split = util::string_split( option_bonus_id_str, "/" );
+    std::vector<std::string> split = util::string_split( option_bonus_id_str, "/:" );
     for (auto & elem : split)
     {
       int bonus_id = util::to_int( elem );
@@ -944,6 +959,11 @@ std::string item_t::encoded_item() const
         s << "/";
       }
     }
+  }
+
+  if ( ! option_relic_ilevel_str.empty() )
+  {
+    s << ",relic_ilevel=" << option_relic_ilevel_str;
   }
 
   if ( ! option_enchant_str.empty() )
@@ -1389,6 +1409,13 @@ bool item_t::decode_ilevel()
     parsed.item_level = util::to_unsigned( option_ilevel_str );
     if ( parsed.item_level == 0 )
       return false;
+
+    if ( parsed.item_level > MAX_ILEVEL )
+    {
+      player -> sim -> errorf( "%s item '%s', too high ilevel %u, maximum ilevel supported is %u.",
+        player -> name(), name(), parsed.item_level, MAX_ILEVEL );
+      return false;
+    }
   }
 
   return true;
@@ -2022,56 +2049,6 @@ bool item_t::download_item( item_t& item )
     const item_enchantment_data_t& bonus = item.player -> dbc.item_enchantment( item.parsed.data.id_socket_bonus );
     success = enchant::initialize_item_enchant( item, item.parsed.socket_bonus_stats, SPECIAL_EFFECT_SOURCE_SOCKET_BONUS, bonus );
   }
-
-  return success;
-}
-
-// item_t::download_glyph ===================================================
-
-bool item_t::download_glyph( player_t* player, std::string& glyph_name, const std::string& glyph_id )
-{
-  bool success = false;
-
-  if ( cache::items() != cache::CURRENT )
-  {
-    for ( unsigned i = 0; ! success && i < player -> sim -> item_db_sources.size(); i++ )
-    {
-      const std::string& src = player -> sim -> item_db_sources[ i ];
-      if ( src == "local" )
-        success = item_database::download_glyph( player, glyph_name, glyph_id );
-      else if ( src == "wowhead" )
-        success = wowhead::download_glyph( player, glyph_name, glyph_id, wowhead::LIVE, cache::ONLY );
-      else if ( src == "ptrhead" )
-        success = wowhead::download_glyph( player, glyph_name, glyph_id, wowhead::PTR, cache::ONLY );
-#if SC_BETA
-      else if ( src == SC_BETA_STR "head" )
-        success = wowhead::download_glyph( player, glyph_name, glyph_id, wowhead::BETA, cache::ONLY );
-#endif
-      else if ( src == "bcpapi" )
-        success = bcp_api::download_glyph( player, glyph_name, glyph_id, cache::ONLY );
-    }
-  }
-
-  if ( cache::items() != cache::ONLY )
-  {
-    // Download in earnest from a data source
-    for ( unsigned i = 0; ! success && i < player -> sim -> item_db_sources.size(); i++ )
-    {
-      const std::string& src = player -> sim -> item_db_sources[ i ];
-      if ( src == "wowhead" )
-        success = wowhead::download_glyph( player, glyph_name, glyph_id, wowhead::LIVE );
-      else if ( src == "ptrhead" )
-        success = wowhead::download_glyph( player, glyph_name, glyph_id, wowhead::PTR );
-#if SC_BETA
-      else if ( src == SC_BETA_STR "head" )
-        success = wowhead::download_glyph( player, glyph_name, glyph_id, wowhead::BETA );
-#endif
-      else if ( src == "bcpapi" )
-        success = bcp_api::download_glyph( player, glyph_name, glyph_id );
-    }
-  }
-
-  util::glyph_name( glyph_name );
 
   return success;
 }

@@ -29,13 +29,15 @@ struct adds_event_t : public raid_event_t
   double spawn_radius;
   double spawn_angle_start;
   double spawn_angle_end;
+  std::string race_str;
+  race_e race;
 
   adds_event_t( sim_t* s, const std::string& options_str ) :
     raid_event_t( s, "adds" ),
     count( 1 ), health( 100000 ), master_str( "Fluffy_Pillow" ), name_str( "Add" ),
     master( 0 ), count_range( false ), adds_to_remove( 0 ), spawn_x_coord( 0 ),
     spawn_y_coord( 0 ), spawn_stacked( 0 ), spawn_radius_min( 0 ), spawn_radius_max( 0 ),
-    spawn_radius( 0 ), spawn_angle_start( -1 ), spawn_angle_end( -1 )
+    spawn_radius( 0 ), spawn_angle_start( -1 ), spawn_angle_end( -1 ), race(RACE_NONE)
   {
     add_option( opt_string( "name", name_str ) );
     add_option( opt_string( "master", master_str ) );
@@ -50,6 +52,7 @@ struct adds_event_t : public raid_event_t
     add_option( opt_float( "distance", spawn_radius ) );
     add_option( opt_float( "angle_start", spawn_angle_start ) );
     add_option( opt_float( "angle_end", spawn_angle_end ) );
+    add_option( opt_string( "race", race_str ) );
     parse_options( options_str );
 
     master = sim -> find_player( master_str );
@@ -77,6 +80,15 @@ struct adds_event_t : public raid_event_t
       sim -> errorf( "Simc does not support overlapping add spawning in a single raid event (duration of %.3fs > reasonable minimum cooldown of %.3fs).", duration.total_seconds(), min_cd.total_seconds() );
       overlap = 1;
       duration = min_cd - timespan_t::from_seconds( 0.001 );
+    }
+
+    if (!race_str.empty())
+    {
+      race = util::parse_race_type(race_str);
+    }
+    else if (!sim->target_race.empty())
+    {
+      race = util::parse_race_type(sim->target_race);
     }
 
     sim -> add_waves++;
@@ -173,6 +185,8 @@ struct adds_event_t : public raid_event_t
         pet_t* p = master -> create_pet( add_name_str );
         assert( p );
         p -> resources.base[ RESOURCE_HEALTH ] = health;
+        p -> race = race;
+        p -> race_str = util::race_type_string(race);
         adds.push_back( p );
       }
     }
@@ -329,11 +343,6 @@ struct casting_event_t : public raid_event_t
   virtual void _start() override
   {
     sim -> target -> debuffs.casting -> increment();
-    for ( size_t i = 0; i < sim -> player_list.size(); ++i )
-    {
-      player_t* p = sim -> player_list[ i ];
-      p -> interrupt();
-    }
   }
 
   virtual void _finish() override
@@ -379,31 +388,69 @@ struct distraction_event_t : public raid_event_t
 
 // Invulnerable =============================================================
 
+// TODO: Support more than sim -> target
 struct invulnerable_event_t : public raid_event_t
 {
+  bool retarget;
+  player_t* target;
+
   invulnerable_event_t( sim_t* s, const std::string& options_str ) :
-    raid_event_t( s, "invulnerable" )
+    raid_event_t( s, "invulnerable" ), retarget( false ), target( s -> target )
   {
+    add_option( opt_bool( "retarget", retarget ) );
+    add_option( opt_func( "target", std::bind( &invulnerable_event_t::parse_target,
+      this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3 ) ) );
+
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  bool parse_target( sim_t* /* sim */, const std::string& /* name */, const std::string& value )
   {
-    sim -> target -> debuffs.invulnerable -> increment();
+    auto it = range::find_if( sim -> target_list, [ &value ]( const player_t* target ) {
+      return util::str_compare_ci( value, target -> name() );
+    } );
 
-    for ( size_t i = 0; i < sim -> player_list.size(); ++i )
+    if ( it != sim -> target_list.end() )
     {
-      player_t* p = sim -> player_list[ i ];
-      p -> in_combat = true; // FIXME? this is done to ensure we don't end up in infinite loops of non-harmful actions with gcd=0
-      p -> halt();
+      target = *it;
+      return true;
     }
-
-    sim -> target -> clear_debuffs();
+    else
+    {
+      sim -> errorf( "Unknown invulnerability raid event target '%s'", value.c_str() );
+      return false;
+    }
   }
 
-  virtual void _finish() override
+  void _start() override
   {
-    sim -> target -> debuffs.invulnerable -> decrement();
+    target -> clear_debuffs();
+    target -> debuffs.invulnerable -> increment();
+
+    range::for_each( sim -> player_non_sleeping_list, []( player_t* p ) {
+      p -> in_combat = true; // FIXME? this is done to ensure we don't end up in infinite loops of non-harmful actions with gcd=0
+      p -> halt();
+    } );
+
+    if ( retarget )
+    {
+      range::for_each( sim -> player_non_sleeping_list, [ this ]( player_t* p ) {
+        p -> acquire_target( ACTOR_INVULNERABLE, target );
+      } );
+    }
+  }
+
+  void _finish() override
+  {
+    target -> debuffs.invulnerable -> decrement();
+
+    if ( retarget )
+    {
+      range::for_each( sim -> player_non_sleeping_list, [ this ]( player_t* p ) {
+        p -> acquire_target( ACTOR_VULNERABLE, target );
+      } );
+    }
+
   }
 };
 
@@ -796,6 +843,36 @@ struct damage_taken_debuff_event_t : public raid_event_t
   }
 };
 
+// Damage Done Buff =======================================================
+
+struct damage_done_buff_event_t : public raid_event_t
+{
+  double multiplier;
+
+  damage_done_buff_event_t( sim_t* s, const std::string& options_str ) :
+    raid_event_t( s, "damage_done" ), multiplier( 1.0 )
+  {
+    add_option( opt_float( "multiplier", multiplier ) );
+    parse_options( options_str );
+  }
+
+  virtual void _start() override
+  {
+    for ( auto p : affected_players )
+    {
+      p -> buffs.damage_done -> increment( 1, multiplier );
+    }
+  }
+
+  virtual void _finish() override
+  {
+    for ( auto p : affected_players )
+    {
+      p -> buffs.damage_done -> decrement();
+    }
+  }
+};
+
 // Vulnerable ===============================================================
 
 struct vulnerable_event_t : public raid_event_t
@@ -1136,7 +1213,8 @@ std::unique_ptr<raid_event_t> raid_event_t::create( sim_t* sim,
   if ( name == "vulnerable"   ) return std::unique_ptr<raid_event_t>(new   vulnerable_event_t( sim, options_str ));
   if ( name == "position_switch" ) return std::unique_ptr<raid_event_t>(new  position_event_t( sim, options_str ));
   if ( name == "flying" )       return std::unique_ptr<raid_event_t>(new       flying_event_t( sim, options_str ));
-  if ( name == "damage_taken_debuff" ) return std::unique_ptr<raid_event_t>(new   damage_taken_debuff_event_t( sim, options_str ));
+  if ( name == "damage_taken_debuff" ) return std::unique_ptr<raid_event_t>(new damage_taken_debuff_event_t( sim, options_str ));
+  if ( name == "damage_done_buff"    ) return std::unique_ptr<raid_event_t>(new    damage_done_buff_event_t( sim, options_str ));
 
   return std::unique_ptr<raid_event_t>();
 }

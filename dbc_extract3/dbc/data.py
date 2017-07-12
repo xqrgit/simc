@@ -164,22 +164,6 @@ class DBCRecord(RawDBCRecord):
 
         return False
 
-    #def value(self, *args):
-    #    v = [ ]
-    #    for attr in args:
-    #        idx = self._cd[attr]
-    #        v.append(self._d[idx])
-    #
-    #    return v
-
-    def field_names(self, delim):
-        fields = [ None ] * len(self._cd)
-        for i in self._cd.keys():
-            fields[self._cd[i]] = i
-        if self._dbcp.id_block_offset > 0:
-            fields = [ 'id', ] + fields
-        return delim.join(fields)
-
     # Customize data access, this gets only called on fields that do not exist in the object. If the
     # format of the field is 'S', the value is an offset to the stringblock giving the string
     def __getattr__(self, name):
@@ -233,21 +217,28 @@ class DBCRecord(RawDBCRecord):
 
         return f
 
+    def field_names(self, delim = ", "):
+        fields = []
+        if self._id > -1:
+            fields.append('id')
+        fields += self._fi
+
+        return delim.join(fields)
+
     def __str__(self):
         s = []
 
         if self._id > -1:
             s.append('id=%u' % self._id)
 
-        for i in range(0, len(self._fi)):
+        for i in range(0, min(len(self._d), len(self._fi))):
             field = self._fi[i]
-            fmt = self._ff[i]
             type_ = self._fo[i]
-            if not field or 'x' in fmt:
+            if not field or 'x' in type_:
                 continue
 
             if type_ == 'S' and self._d[i] > 0:
-                s.append('%s=\"%s\"' % (field, repr(self._dbcp.get_string(self._d[i]))))
+                s.append('%s=%s' % (field, repr(self._dbcp.get_string(self._d[i]))))
             elif type_ == 'f':
                 s.append('%s=%f' % (field, self._d[i]))
             elif type_ in 'ihb':
@@ -258,7 +249,7 @@ class DBCRecord(RawDBCRecord):
 
     def csv(self, delim = ',', header = False):
         s = ''
-        if self._dbcp.id_block_offset > 0:
+        if self._id > -1:
             s += '%u%c' % (self._id, delim)
 
         for i in range(0, len(self._fi)):
@@ -270,7 +261,7 @@ class DBCRecord(RawDBCRecord):
 
             if type_ == 'S':
                 if self._d[i] > 0:
-                    s += '\"%s\"%c' % (repr(self._dbcp.get_string(self._d[i])), delim)
+                    s += '"%s"%c' % (self._dbcp.get_string(self._d[i]).replace('"', '\\"'), delim)
                 else:
                     s += '""%c' % delim
             elif type_ == 'f':
@@ -412,9 +403,9 @@ def initialize_data_model(options, obj):
 
         # Setup data field names (_fi), data field types (_fo), and data field formats for output
         # (_ff)
-        setattr(cls, '_fi', tuple(data_fo['data-fields']))
-        setattr(cls, '_fo', tuple(data_fo['data-format']))
-        setattr(cls, '_ff', tuple(data_fo['cpp']))
+        setattr(cls, '_fi', tuple(_FORMATDB.fields(dbc_file_name, True)))
+        setattr(cls, '_fo', tuple(_FORMATDB.types(dbc_file_name, True)))
+        setattr(cls, '_ff', tuple(_FORMATDB.formats(dbc_file_name, True)))
 
         # Setup index lookup table for fields to speedup __getattr__ access
         setattr(cls, '_cd', {})
@@ -435,6 +426,7 @@ def initialize_data_model(options, obj):
         dbc.data.Spell.link('shapeshift', dbc.data.SpellShapeshift)
         dbc.data.Spell.link('scaling', dbc.data.SpellScaling)
         dbc.data.Spell.link('artifact_power', dbc.data.ArtifactPowerRank)
+        dbc.data.Spell.link('label', dbc.data.SpellLabel)
 
     if 'SpellEffect' in dir(obj):
         dbc.data.SpellEffect.link('scaling', dbc.data.SpellEffectScaling)
@@ -447,9 +439,16 @@ def initialize_data_model(options, obj):
         dbc.data.Item_sparse.link('spells', dbc.data.ItemEffect)
         dbc.data.Item_sparse.link('journal', dbc.data.JournalEncounterItem)
 
+    if 'ItemSparse' in dir(obj):
+        dbc.data.ItemSparse.link('spells', dbc.data.ItemEffect)
+        dbc.data.ItemSparse.link('journal', dbc.data.JournalEncounterItem)
+
     if 'ItemSet' in dir(obj):
         dbc.data.ItemSet.link('bonus', dbc.data.ItemSetSpell)
 
     if 'GemProperties' in dir(obj):
-        dbc.data.GemProperties.link('item', dbc.data.Item_sparse)
+        if 'Item_sparse' in dir(obj):
+            dbc.data.GemProperties.link('item', dbc.data.Item_sparse)
+        elif 'ItemSparse' in dir(obj):
+            dbc.data.GemProperties.link('item', dbc.data.ItemSparse)
 

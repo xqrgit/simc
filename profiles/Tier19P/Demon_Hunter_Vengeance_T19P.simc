@@ -1,12 +1,18 @@
 demonhunter="Demon_Hunter_Vengeance_T19P"
+spec=vengeance
 level=110
 race=night_elf
 timeofday=night
 role=tank
 position=front
 talents=3323313
-artifact=60:0:0:0:0:1096:1:1098:1:1099:1:1228:1:1229:3:1230:3:1231:3:1234:3:1236:1:1328:1:1434:1
-spec=vengeance
+artifact=60:0:0:0:0:1096:1:1098:1:1099:3:1228:1:1229:3:1230:3:1231:3:1233:2:1234:3:1236:1:1328:1:1434:1
+
+# Default consumables
+potion=unbending_potion
+flask=seventh_demon
+food=lavish_suramar_feast
+augmentation=defiled
 
 # This default action priority list is automatically created based on your character.
 # It is a attempt to provide you with a action list that is both simple and practicable,
@@ -15,21 +21,24 @@ spec=vengeance
 # SimulationCraft is always looking for updates and improvements to the default action lists.
 
 # Executed before combat begins. Accepts non-harmful actions only.
-actions.precombat=flask,type=flask_of_the_seventh_demon
-actions.precombat+=/food,type=the_hungry_magister
-actions.precombat+=/augmentation,type=defiled
+actions.precombat=flask
+actions.precombat+=/augmentation
+actions.precombat+=/food
 # Snapshot raid buffed stats before combat begins and pre-potting is done.
 actions.precombat+=/snapshot_stats
-actions.precombat+=/potion,name=unbending_potion
+actions.precombat+=/potion
 
 # Executed every time the actor is available.
 actions=auto_attack
+actions+=/consume_magic
+actions+=/use_item,slot=trinket2
+actions+=/demonic_infusion,if=cooldown.demon_spikes.charges=0&pain.deficit>60
 actions+=/fiery_brand,if=buff.demon_spikes.down&buff.metamorphosis.down
 actions+=/demon_spikes,if=charges=2|buff.demon_spikes.down&!dot.fiery_brand.ticking&buff.metamorphosis.down
 actions+=/empower_wards,if=debuff.casting.up
 actions+=/infernal_strike,if=!sigil_placed&!in_flight&remains-travel_time-delay<0.3*duration&artifact.fiery_demise.enabled&dot.fiery_brand.ticking
 actions+=/infernal_strike,if=!sigil_placed&!in_flight&remains-travel_time-delay<0.3*duration&(!artifact.fiery_demise.enabled|(max_charges-charges_fractional)*recharge_time<cooldown.fiery_brand.remains+5)&(cooldown.sigil_of_flame.remains>7|charges=2)
-actions+=/spirit_bomb,if=debuff.frailty.down
+actions+=/spirit_bomb,if=soul_fragments=5|debuff.frailty.down
 actions+=/soul_carver,if=dot.fiery_brand.ticking
 actions+=/immolation_aura,if=pain<=80
 actions+=/felblade,if=pain<=70
@@ -42,6 +51,7 @@ actions+=/fel_eruption
 actions+=/sigil_of_flame,if=remains-delay<=0.3*duration
 actions+=/fracture,if=pain>=80&soul_fragments<4&incoming_damage_4s<=health.max*0.20
 actions+=/soul_cleave,if=pain>=80
+actions+=/sever
 actions+=/shear
 
 head=hood_of_the_blind_executioner,id=137511
@@ -63,10 +73,10 @@ off_hand=aldrachi_warblades,id=128831,ilevel=870
 
 # Gear Summary
 # gear_ilvl=826.25
-# gear_agility=8531
-# gear_stamina=14978
-# gear_crit_rating=9245
-# gear_haste_rating=834
-# gear_mastery_rating=1733
-# gear_versatility_rating=4695
+# gear_agility=8886
+# gear_stamina=15615
+# gear_crit_rating=9783
+# gear_haste_rating=868
+# gear_mastery_rating=1810
+# gear_versatility_rating=4970
 # gear_armor=1830

@@ -620,6 +620,14 @@ bool item_database::apply_item_bonus( item_t& item, const item_bonus_entry_t& en
     // support the bonus id stuff outside of our local item database.
     case ITEM_BONUS_MOD:
     {
+      // Check that Simulationcraft understands the stat the Blizzard's item bonus is proposing to
+      // add to the item
+      auto simc_stat_type = util::translate_item_mod( entry.value_1 );
+      if ( simc_stat_type == STAT_NONE )
+      {
+        break;
+      }
+
       // First, check if the item already has that stat
       int found = -1;
       int offset = -1;
@@ -778,6 +786,33 @@ bool item_database::apply_item_bonus( item_t& item, const item_bonus_entry_t& en
       }
       break;
     }
+    case ITEM_BONUS_ADD_RANK:
+    {
+      auto player = item.player;
+      auto artifact_id = player -> dbc.artifact_by_spec( player -> specialization() );
+      if ( artifact_id == 0 )
+      {
+        break;
+      }
+
+      auto powers = player -> dbc.artifact_powers( artifact_id );
+      auto it = range::find_if( powers, [ &entry ]( const artifact_power_data_t* power ) {
+        return as<int>( power -> power_index ) == entry.value_1;
+      } );
+
+      if ( it != powers.end() )
+      {
+        auto internal_power_index = std::distance( powers.begin(), it );
+        player -> artifact.add_bonus_rank( internal_power_index );
+        if ( player -> sim -> debug )
+        {
+          auto spell = player -> dbc.spell( ( *it ) -> power_spell_id );
+          player -> sim -> out_debug.printf( "Player %s item '%s' adding +1 rank to %s (id=%u/%u, int_idx=%u, power_idx=%u)",
+            player -> name(), item.name(), spell -> name_cstr(), spell -> id(), ( *it ) -> id,
+            internal_power_index, ( *it ) -> power_index );
+        }
+      }
+    }
     default:
       break;
   }
@@ -815,22 +850,44 @@ stat_pair_t item_database::item_enchantment_effect_stats( player_t* player,
     stat = util::translate_item_mod( enchantment.ench_prop[ index ] );
 
   double value = 0;
-
-  if ( enchantment.id_scaling == 0 )
-    value = enchantment.ench_amount[ index ];
-  else
+  // First try to figure out the stat enchant through the spell that is associated with it (e.g.,
+  // the enchant spell)
+  if ( enchantment.id_spell > 0 )
   {
-    unsigned level = player -> level();
+    auto spell = player -> find_spell( enchantment.id_spell );
+    for ( size_t effect_idx = 1, end = spell -> effect_count(); effect_idx <= end; ++effect_idx )
+    {
+      const auto& effect = spell -> effectN( effect_idx );
+      // Use the first Enchant Item effect found in the spell
+      if ( effect.type() == E_ENCHANT_ITEM )
+      {
+        value = util::round( effect.average( player ) );
+        break;
+      }
+    }
+  }
 
-    if ( static_cast< unsigned >( level ) > enchantment.max_scaling_level )
-      level = enchantment.max_scaling_level;
+  // If we cannot find any value through spell data, revert back to using item enchantment data
+  if ( value == 0 )
+  {
+    if ( enchantment.id_scaling == 0 )
+      value = enchantment.ench_amount[ index ];
+    else
+    {
+      unsigned level = player -> level();
 
-    double budget = player -> dbc.spell_scaling( static_cast< player_e >( enchantment.id_scaling ), level );
-    value = util::round( budget * enchantment.ench_coeff[ index ] );
+      if ( static_cast< unsigned >( level ) > enchantment.max_scaling_level )
+        level = enchantment.max_scaling_level;
+
+      double budget = player -> dbc.spell_scaling( static_cast< player_e >( enchantment.id_scaling ), level );
+      value = util::round( budget * enchantment.ench_coeff[ index ] );
+    }
   }
 
   if ( stat != STAT_NONE && value != 0 )
+  {
     return stat_pair_t( stat, (int)value );
+  }
 
   return stat_pair_t();
 }
@@ -1295,21 +1352,6 @@ bool item_database::download_item( item_t& item )
   return ret;
 }
 
-// item_database_t::download_glyph ==========================================
-
-bool item_database::download_glyph( player_t* player, std::string& glyph_name,
-                                    const std::string& glyph_id )
-{
-  long gid                 = strtol( glyph_id.c_str(), nullptr, 10 );
-  const item_data_t* glyph = player -> dbc.item( gid );
-
-  if ( gid <= 0 || ! glyph ) return false;
-
-  glyph_name = glyph -> name;
-
-  return true;
-}
-
 // item_database::upgrade_ilevel ============================================
 
 // TODO: DBC Based upgrading system would be safer, this works for now, probably
@@ -1510,6 +1552,20 @@ static int get_bonus_id_sockets( const std::vector<const item_bonus_entry_t*>& e
   return 0;
 }
 
+static int get_bonus_power_index( const std::vector<const item_bonus_entry_t*>& entries )
+{
+  auto it = range::find_if( entries, []( const item_bonus_entry_t* entry ) {
+    return entry -> type == ITEM_BONUS_ADD_RANK;
+  } );
+
+  if ( it != entries.end() )
+  {
+    return ( *it ) -> value_1;
+  }
+
+  return -1;
+}
+
 std::vector< std::tuple< item_mod_type, double, double > > get_bonus_id_stats(
     const std::vector<const item_bonus_entry_t*>& entries )
 {
@@ -1556,7 +1612,8 @@ std::string dbc::bonus_ids_str( dbc_t& dbc)
     // Need at least one "relevant" type for us
     if ( e -> type != ITEM_BONUS_ILEVEL && e -> type != ITEM_BONUS_MOD &&
          e -> type != ITEM_BONUS_SOCKET && e -> type != ITEM_BONUS_SCALING &&
-         e -> type != ITEM_BONUS_SCALING_2 && e -> type != ITEM_BONUS_SET_ILEVEL )
+         e -> type != ITEM_BONUS_SCALING_2 && e -> type != ITEM_BONUS_SET_ILEVEL &&
+         e -> type != ITEM_BONUS_ADD_RANK )
     {
       e++;
       continue;
@@ -1586,6 +1643,7 @@ std::string dbc::bonus_ids_str( dbc_t& dbc)
     int base_ilevel = get_bonus_id_base_ilevel( entries );
     auto stats = get_bonus_id_stats( entries );
     std::pair< std::pair<int, double>, std::pair<int, double> > scaling = get_bonus_id_scaling( dbc, entries );
+    auto power_index = get_bonus_power_index( entries );
 
     std::vector<std::string> fields;
 
@@ -1618,6 +1676,11 @@ std::string dbc::bonus_ids_str( dbc_t& dbc)
     if ( sockets > 0 )
     {
       fields.push_back( "socket={ " + util::to_string( sockets ) + " }" );
+    }
+
+    if ( power_index > -1 )
+    {
+      fields.push_back( "add_rank={ power_index=" + util::to_string( power_index ) + " }" );
     }
 
     if ( stats.size() > 0 )
@@ -1734,10 +1797,7 @@ bool item_database::has_item_bonus_type( const item_t& item, item_bonus_type bon
 double item_database::apply_combat_rating_multiplier( const item_t& item, double amount )
 {
   auto type = item_combat_rating_type( &item.parsed.data );
-  // TODO: FIXME: Apply categorized combat rating multiplier only on PTR sims. For live ones, the
-  // combat rating multiplier category is ignored. This needs to be fixed when 7.1.5 goes live.
-  if ( item.player -> dbc.ptr &&
-       type == CR_MULTIPLIER_INVALID )
+  if ( type == CR_MULTIPLIER_INVALID )
   {
     return amount;
   }
@@ -1765,6 +1825,7 @@ combat_rating_multiplier_type item_database::item_combat_rating_type( const item
     case INVTYPE_WEAPONMAINHAND:
     case INVTYPE_WEAPONOFFHAND:
     case INVTYPE_RANGED:
+    case INVTYPE_RANGEDRIGHT:
     case INVTYPE_THROWN:
       return CR_MULTIPLIER_WEAPON;
     case INVTYPE_ROBE:
@@ -1779,6 +1840,7 @@ combat_rating_multiplier_type item_database::item_combat_rating_type( const item
     case INVTYPE_FEET:
     case INVTYPE_SHIELD:
     case INVTYPE_HOLDABLE:
+    case INVTYPE_HANDS:
       return CR_MULTIPLIER_ARMOR;
     default:
       return CR_MULTIPLIER_INVALID;

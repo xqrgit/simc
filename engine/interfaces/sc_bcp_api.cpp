@@ -15,46 +15,55 @@
 
 namespace { // UNNAMED NAMESPACE
 
-player_e parse_armory_class( const std::string& class_str )
-{
-  player_e pt = util::translate_class_str( class_str );
-  if ( pt == PLAYER_NONE )
-  {
-    if ( util::str_compare_ci( class_str, "death-knight" ) )
-      pt = DEATH_KNIGHT;
-    else if ( util::str_compare_ci( class_str, "demon-hunter" ) )
-      pt = DEMON_HUNTER;
-  }
-  return pt;
-}
-
-race_e parse_armory_race( const std::string& race_str )
-{
-  race_e rt = util::parse_race_type( race_str );
-  if ( rt == RACE_NONE )
-  {
-    if ( util::str_compare_ci( race_str, "blood-elf" ) )
-      rt = RACE_BLOOD_ELF;
-    else if ( util::str_compare_ci( race_str, "night-elf" ) )
-      rt = RACE_NIGHT_ELF;
-    // Armory HTML does not give an url to the racial section of Pandarens ..
-    // instead it contains an empty javascript entry. The rest of the races
-    // contain proper urls.
-    else if ( util::str_compare_ci( race_str, "javascript:;" ) )
-      rt = RACE_PANDAREN;
-  }
-
-  return rt;
-}
-
 struct player_spec_t
 {
   std::string region, server, name, url, cleanurl, local_json, origin, talent_spec;
 };
 
+// download
+
+bool download( sim_t*               sim,
+               rapidjson::Document& d,
+               std::string&         result,
+               const std::string&   url,
+               const std::string&   cleanurl,
+               cache::behavior_e    caching )
+{
+  int attempt = 0;
+  do
+  {
+#if defined ( SC_WINDOWS )
+    _sleep( attempt * 250 );
+#else
+    usleep( attempt * 250000 );
+#endif
+    if ( http::get( result, url, cleanurl, caching ) )
+    {
+      d.Parse< 0 >( result.c_str() );
+
+      if ( ! d.HasParseError() && d.HasMember( "status" ) )
+      {
+        std::string status = d[ "status" ].GetString();
+        // Would be nicer to use status codes, but this will do for now ...
+        if ( status == "nok" && util::str_in_str_ci( d[ "reason" ].GetString(), "not found" ) )
+        {
+          break;
+        }
+      }
+      else
+      {
+        break;
+      }
+    }
+  } while ( ++attempt < sim -> armory_retries );
+
+  return attempt < sim -> armory_retries;
+}
+
 // download_id ==============================================================
 
-bool download_id( rapidjson::Document& d, 
+bool download_id( sim_t* sim,
+                  rapidjson::Document& d,
                   const std::string& region,
                   unsigned item_id,
                   std::string apikey,
@@ -78,10 +87,9 @@ bool download_id( rapidjson::Document& d,
   }
 
   std::string result;
-  if ( ! http::get( result, url, cleanurl, caching ) )
+  if ( ! download( sim, d, result, url, cleanurl, caching ) )
     return false;
 
-  d.Parse< 0 >( result.c_str() );
   return true;
 }
 
@@ -183,19 +191,26 @@ bool parse_talents( player_t*  p,
 
 // parse_items ==============================================================
 
-void parse_artifact( item_t& item, const rapidjson::Value& artifact )
+bool parse_artifact( item_t& item, const rapidjson::Value& artifact )
 {
-  if ( ! artifact.HasMember( "artifactId" ) )
+  if ( ! artifact.HasMember( "artifactId" ) || ! artifact.HasMember( "artifactTraits" ) )
   {
-    return;
-  }
-
-  if ( artifact.HasMember( "artifactTraits" ) && artifact[ "artifactTraits" ].Size() == 0 )
-  {
-    return;
+    return true;
   }
 
   auto artifact_id = artifact[ "artifactId" ].GetUint();
+  if ( artifact_id == 0 )
+  {
+    return true;
+  }
+
+  auto spec_artifact_id = item.player -> dbc.artifact_by_spec( item.player -> specialization() );
+  if ( artifact_id != spec_artifact_id )
+  {
+    item.sim -> errorf( "Player %s has wrong artifact equipped, disabling item ...", item.player -> name() );
+    return false;
+  }
+
   auto powers = item.player -> dbc.artifact_powers( artifact_id );
   for ( auto power_idx = 0U, end = artifact[ "artifactTraits" ].Size(); power_idx < end; ++power_idx )
   {
@@ -247,7 +262,7 @@ void parse_artifact( item_t& item, const rapidjson::Value& artifact )
   // If no relics inserted, bail out early
   if ( ! artifact.HasMember( "relics" ) || artifact[ "relics" ].Size() == 0 )
   {
-    return;
+    return true;
   }
 
   for ( auto relic_idx = 0U, end = artifact[ "relics" ].Size(); relic_idx < end; ++relic_idx )
@@ -323,6 +338,8 @@ void parse_artifact( item_t& item, const rapidjson::Value& artifact )
       ++it;
     }
   }
+
+  return true;
 }
 
 bool parse_items( player_t*  p,
@@ -395,427 +412,29 @@ bool parse_items( player_t*  p,
     // Artifact
     if ( data.HasMember( "quality" ) && data[ "quality" ].GetUint() == ITEM_QUALITY_ARTIFACT )
     {
-      parse_artifact( item, data );
+      // If artifact parsing fails, reset the whole item input
+      if ( ! parse_artifact( item, data ) )
+      {
+        item.parsed = item_t::parsed_input_t();
+      }
     }
 
     // Since Armory API does not give us the drop level of items (such as quest items), we will need
-    // to implement a hack here to actually grab the armory-reported item level for those items. We
-    // do this by checking if Blizzard includes a ITEM_BONUS_SCALING_2 type bonus in their
-    // bonusLists array.
-    if ( item_database::has_item_bonus_type( item, ITEM_BONUS_SCALING_2 ) &&
-         data.HasMember( "itemLevel" ) )
+    // to implement a hack here. We do this by checking if Blizzard includes a ITEM_BONUS_SCALING_2
+    // type bonus in their bonusLists array, and set the drop level to the player's level. Note that
+    // this may result in incorrect stats if the player attained the item during leveling, but
+    // there's little else we can do, as the "itemLevel" value of the item info is the base ilevel,
+    // which in many cases is very incorrect.
+    if ( item_database::has_item_bonus_type( item, ITEM_BONUS_SCALING_2 ) )
     {
-      item.parsed.item_level = data[ "itemLevel" ].GetUint();
+      auto item_data = p -> dbc.item( item.parsed.data.id );
+      item.parsed.drop_level = p -> true_level;
+      p -> sim -> errorf( "Player %s item '%s' in slot '%s' uses drop-level based scaling, setting drop level to %u.",
+        p -> name(), item_data ? item_data -> name : "unknown", item.slot_name(), item.parsed.drop_level );
     }
   }
 
   return true;
-}
-
-// parse_player =============================================================
-
-bool parse_player_html_talent( sim_t*,
-                                     const std::string& specifier,
-                                     player_t*          player,
-                                     const sc_xml_t&    data )
-{
-  sc_xml_t specs_obj = data.get_node( "div", "class", "talent-specs" );
-  if ( ! specs_obj.valid() )
-  {
-    return false;
-  }
-
-  sc_xml_t spec_0_obj = specs_obj.get_node( "a", "data-spec-id", "0" );
-  sc_xml_t spec_1_obj = specs_obj.get_node( "a", "data-spec-id", "1" );
-  std::string spec_0_str, spec_1_str;
-  if ( ! spec_0_obj.valid() || ! spec_0_obj.get_value( spec_0_str, "class" ) )
-  {
-    return false;
-  }
-
-  if ( ! spec_1_obj.valid() || ! spec_1_obj.get_value( spec_1_str, "class" ) )
-  {
-    return false;
-  }
-
-  bool spec0_active = util::str_in_str_ci( spec_0_str, "active" );
-  std::string spec_id;
-
-  if ( util::str_compare_ci( specifier, "active" ) )
-  {
-    spec_id = spec0_active ? "0" : "1";
-  }
-  else if ( util::str_compare_ci( specifier, "inactive" ) )
-  {
-    spec_id = spec0_active ? "1" : "0";
-  }
-  else if ( util::str_compare_ci( specifier, "primary" ) )
-  {
-    spec_id = "0";
-  }
-  else if ( util::str_compare_ci( specifier, "secondary" ) )
-  {
-    spec_id = "1";
-  }
-  else
-    return false;
-
-  // Figure out the canonical specialization name from the active talent spec
-  std::string spec_name;
-  sc_xml_t spec_obj = specs_obj.get_node( "a", "data-spec-id", spec_id );
-  if ( ! spec_obj.valid() || ! spec_obj.get_value( spec_name, "data-spec-name" ) )
-  {
-    return false;
-  }
-
-  // ..aand construct a hacky string that we can match to a specialization_e
-  // enum ...
-  std::string profile_spec = spec_name + " ";
-  profile_spec += util::player_type_string( player -> type );
-  player -> _spec = util::parse_specialization_type( profile_spec );
-  if ( player -> _spec == SPEC_NONE )
-  {
-    player -> sim -> errorf( "BCP API: Can't parse specialization '%s' for player %s.\n",
-        profile_spec.c_str(),
-        player -> name() );
-  }
-
-  // Parse through talent tiers
-  sc_xml_t talents_obj = data.get_node( "div", "id", "talent-build-" + spec_id );
-  if ( ! talents_obj.valid() )
-  {
-    return false;
-  }
-
-  std::vector<sc_xml_t> talent_tiers_obj = talents_obj.get_nodes( "li", "class", "talent" );
-  std::vector<std::string> talent_arr;
-  std::string talents_str;
-  for ( size_t i = 0; i < talent_tiers_obj.size(); i++ )
-  {
-    int tier, column;
-    if ( ! talent_tiers_obj[ i ].get_value( tier, "data-tier" ) ||
-         ! talent_tiers_obj[ i ].get_value( column, "data-column" ) )
-    {
-      return false;
-    }
-
-    if ( talent_arr.size() < static_cast<size_t>( tier + 1 ) )
-      talent_arr.resize( tier + 1, "0" );
-    talent_arr[ tier ] = util::to_string( column + 1 );
-  }
-
-  // Aand construct a talent string, that will be parsed by magic.
-  for ( size_t i = 0; i < talent_arr.size(); i++ )
-  {
-    talents_str += talent_arr[ i ];
-  }
-
-  if ( ! player -> parse_talents_numbers( talents_str ) )
-  {
-    player -> sim -> errorf( "BCP API: Can't parse talent encoding '%s' for player %s.\n",
-        talents_str.c_str(),
-        player -> name() );
-    return false;
-  }
-
-  // And re-format talents into an armory-based talent url, since this is
-  // armory import
-  player -> create_talents_armory();
-
-  return true;
-}
-
-bool parse_player_html_profession( sim_t*,
-                                   player_t*       player,
-                                   const sc_xml_t& data )
-{
-
-  sc_xml_t prof_obj = data.get_node( "div", "class", "summary-professions" );
-  if ( ! prof_obj.valid() )
-  {
-    return false;
-  }
-
-  std::vector<sc_xml_t> profession_nodes = prof_obj.get_nodes( "a", "class", "profession-details" );
-  for ( size_t i = 0; i < profession_nodes.size(); i++ )
-  {
-    std::string profession_href, profession_value;
-
-    if ( ! profession_nodes[ i ].get_value( profession_href, "href" ) )
-    {
-      continue;
-    }
-
-    sc_xml_t value_obj = profession_nodes[ i ].get_node( "span", "class", "value" );
-    if ( ! value_obj.valid() || ! value_obj.get_value( profession_value, "." ) )
-    {
-      continue;
-    }
-
-    if ( ! player -> professions_str.empty() )
-    {
-      player -> professions_str += "/";
-    }
-
-    std::vector<std::string> profession_href_split = util::string_split( profession_href, "/" );
-    player -> professions_str += profession_href_split.back();
-    player -> professions_str += "=";
-    player -> professions_str += profession_value;
-  }
-
-  return true;
-}
-
-void parse_item_data_str( item_t& item, const std::string& data_str )
-{
-  bool artifact = false;
-  std::vector<std::string> data_split = util::string_split( data_str, "&" );
-  for ( size_t i = 0; i < data_split.size(); i++ )
-  {
-    std::string opt, val;
-    std::string::size_type pos = data_split[ i ].find( '=' );
-    if ( pos == std::string::npos )
-    {
-      continue;
-    }
-
-    opt = data_split[ i ].substr( 0, pos );
-    val = data_split[ i ].substr( pos + 1 );
-
-    if ( util::str_compare_ci( opt, "g0" ) )
-    {
-      item.parsed.gem_id[ 0 ] = util::to_int( val );
-    }
-    else if ( util::str_compare_ci( opt, "g1" ) )
-    {
-      item.parsed.gem_id[ 1 ] = util::to_int( val );
-    }
-    else if ( util::str_compare_ci( opt, "g2" ) )
-    {
-      item.parsed.gem_id[ 2 ] = util::to_int( val );
-    }
-    else if ( util::str_compare_ci( opt, "e" ) )
-    {
-      item.parsed.enchant_id = util::to_unsigned( val );
-    }
-    else if ( util::str_compare_ci( opt, "ee" ) )
-    {
-      item.parsed.addon_id = util::to_unsigned( val );
-    }
-    else if ( util::str_compare_ci( opt, "bl" ) )
-    {
-      std::vector<std::string> bonus_split = util::string_split( val, "," );
-      for ( size_t j = 0; j < bonus_split.size(); j++ )
-      {
-        item.parsed.bonus_id.push_back( util::to_int( bonus_split[ j ] ) );
-      }
-    }
-    else if ( util::str_compare_ci( opt, "aai" ) )
-    {
-      artifact = true;
-    }
-  }
-
-  // For the HTML-based armory parsing, there is no artifact data available. Furthermore, there also
-  // is no relic data available other than the "adjust ilevel" bonus ids in the artifact weapon
-  // itself, and the gem item ids. So, as a horribly kludgy hack, just erase the gems for now,
-  // destroying any +ranks they give, but keeping the artifact ilevel correct.
-  //
-  // Note that fundamentally, the html parsing is broken because of lack of information on
-  // Blizzard's end. There's no way to get the actual artifact trait information from the html-based
-  // armory profile, so the data it will simulate with is completely incorrect for any artifact
-  // wielding character of reasonable progression.
-  if ( artifact )
-  {
-    range::fill( item.parsed.gem_id, 0 );
-  }
-}
-
-bool parse_player_html_items( sim_t*,
-                                   player_t*       player,
-                                   const sc_xml_t& data )
-{
-  sc_xml_t items_obj = data.get_node( "div", "id", "summary-inventory" );
-  if ( ! items_obj.valid() )
-  {
-    return false;
-  }
-
-  for ( unsigned i = 0; i < SLOT_MAX; ++i )
-  {
-    item_t& item = player -> items[ i ];
-
-    sc_xml_t slot_data = items_obj.get_node( "div", "data-id", util::to_string( i ) );
-    if ( ! slot_data.valid() )
-    {
-      continue;
-    }
-
-    sc_xml_t item_data = slot_data.get_node( "a", "class", "item" );
-    std::string data_str;
-    if ( ! item_data.valid() || ! item_data.get_value( data_str, "data-item" ) )
-    {
-      continue;
-    }
-
-    std::string item_id_str;
-    if ( ! item_data.get_value( item_id_str, "href" ) )
-    {
-      continue;
-    }
-    else
-    {
-      std::vector<std::string> item_id_split = util::string_split( item_id_str, "/" );
-      for ( size_t j = 0; j < item_id_split.size(); j++ )
-      {
-        item.parsed.data.id = util::to_unsigned ( item_id_split[ j ] );
-        if ( item.parsed.data.id > 0 )
-        {
-          break;
-        }
-      }
-    }
-
-    parse_item_data_str( item, data_str );
-  }
-
-  return true;
-}
-
-player_t* parse_player_html( sim_t*             sim,
-                             player_spec_t&     player,
-                             cache::behavior_e  caching )
-{
-  sim -> current_slot = 0;
-
-  sc_xml_t profile = sc_xml_t::get( sim, player.url, player.cleanurl, caching );
-  if ( ! profile.valid() )
-  {
-    sim -> errorf( "BCP API (html): Unable to download player from '%s', invalid profile\n",
-        player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  if ( sim -> debug && profile.valid() )
-  {
-    profile.print();
-  }
-
-  sc_xml_t name_obj = profile.get_node( "div", "class", "name" );
-  if ( ! name_obj.valid() || ! name_obj.get_value( player.name, "a/." ) )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player name from '%s'.\n", player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  sc_xml_t class_obj = profile.get_node( "a", "class", "class" );
-  std::string class_name_data, class_name;
-  player_e class_type = PLAYER_NONE;
-  if ( ! class_obj.valid() || ! class_obj.get_value( class_name_data, "href" ) )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player class from '%s'.\n", player.cleanurl.c_str() );
-    return nullptr;
-  }
-  else
-  {
-    std::vector<std::string> class_split = util::string_split( class_name_data, "/" );
-    class_name = class_split[ class_split.size() - 1 ];
-    class_type = parse_armory_class( class_name );
-  }
-
-  const module_t* module = module_t::get( class_type );
-  if ( ! module || ! module -> valid() )
-  {
-    sim -> errorf( "\nModule for class %s is currently not available.\n", class_name.c_str() );
-    return nullptr;
-  }
-
-  sc_xml_t level_obj = profile.get_node( "span", "class", "level" );
-  int level = 0;
-  if ( ! level_obj.valid() || ! level_obj.get_value( level, "strong/." ) )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player level from '%s'.\n", player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  sc_xml_t race_obj = profile.get_node( "a", "class", "race" );
-  std::string race_name_data, race_name;
-  race_e race_type = RACE_NONE;
-  if ( ! race_obj.valid() || ! race_obj.get_value( race_name_data, "href" ) )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player race from '%s'.\n", player.cleanurl.c_str() );
-    return nullptr;
-  }
-  else
-  {
-    std::vector<std::string> race_split = util::string_split( race_name_data, "/" );
-    race_name = race_split[ race_split.size() - 1 ];
-    race_type = parse_armory_race( race_name );
-  }
-
-  if ( race_type == RACE_NONE )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player race from '%s'.\n", player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  std::string name = player.name;
-
-  if ( player.talent_spec != "active" && ! player.talent_spec.empty() )
-  {
-    name += '_';
-    name += player.talent_spec;
-  }
-
-  if ( ! name.empty() )
-    sim -> current_name = name;
-
-  player_t* p = sim -> active_player = module -> create_player( sim, name, race_type );
-
-  if ( ! p )
-  {
-    sim -> errorf( "BCP API (html): Unable to build player with class '%s' and name '%s' from '%s'.\n",
-                   class_name.c_str(), name.c_str(), player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  p -> true_level = level;
-  p -> region_str = player.region.empty() ? sim -> default_region_str : player.region;
-  sc_xml_t realm_obj = profile.get_node( "span", "id", "profile-info-realm" );
-  if ( ! realm_obj.valid() )
-  {
-    if ( ! player.server.empty() )
-      p -> server_str = player.server;
-  }
-  else
-  {
-    realm_obj.get_value( p -> server_str, "." );
-  }
-
-  if ( ! player.origin.empty() )
-    p -> origin_str = player.origin;
-
-  // TODO: Do we need to error check this nowadays?
-  parse_player_html_profession( sim, p, profile );
-  if ( ! parse_player_html_talent( sim, player.talent_spec, p, profile ) )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player talent specialization from '%s'.\n",
-        player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  if ( ! parse_player_html_items( sim, p, profile ) )
-  {
-    sim -> errorf( "BCP API (html): Unable to extract player items from '%s'.\n",
-        player.cleanurl.c_str() );
-    return nullptr;
-  }
-
-  sim -> errorf( "BCP API (html): Note, Blizzard does not provide Artifact trait information on "
-                 "their HTML armory page. The actor will be simulated without any artifact traits."
-                 " The simulator output for the actor will not be correct." );
-
-  return p;
 }
 
 // parse_player =============================================================
@@ -827,6 +446,7 @@ player_t* parse_player( sim_t*             sim,
   sim -> current_slot = 0;
 
   std::string result;
+  rapidjson::Document profile;
 
   // China does not have mashery endpoints, so no point in even trying to get anything here
   if ( util::str_compare_ci( player.region, "cn" ) )
@@ -835,8 +455,12 @@ player_t* parse_player( sim_t*             sim,
   }
   else if ( player.local_json.empty() )
   {
-    if ( ! http::get( result, player.url, player.cleanurl, caching ) )
+    if ( ! download( sim, profile, result, player.url, player.cleanurl, caching ) )
+    {
+      sim -> errorf( "BCP API: Unable to download player from '%s', JSON download failed",
+          player.cleanurl.c_str() );
       return nullptr;
+    }
   }
   else
   {
@@ -846,8 +470,7 @@ player_t* parse_player( sim_t*             sim,
                    ( std::istreambuf_iterator<char>()    ) );
   }
 
-  rapidjson::Document profile;
-  profile.Parse< 0 >( result.c_str() );
+  profile.Parse< 0 >(result.c_str());
 
   if ( profile.HasParseError() )
   {
@@ -942,7 +565,7 @@ player_t* parse_player( sim_t*             sim,
     p -> origin_str = player.origin;
 
   if ( profile.HasMember( "thumbnail" ) )
-    p -> report_information.thumbnail_url = "http://" + p -> region_str + ".battle.net/static-render/" +
+    p -> report_information.thumbnail_url = "https://render-api-" + p -> region_str + ".worldofwarcraft.com/static-render/" +
                                             p -> region_str + '/' + profile[ "thumbnail" ].GetString();
 
   if ( profile.HasMember( "professions" ) )
@@ -960,7 +583,7 @@ player_t* parse_player( sim_t*             sim,
   if ( ! p -> server_str.empty() )
     p -> armory_extensions( p -> region_str, p -> server_str, player.name, caching );
 
-  return p;
+   return p;
 }
 
 // download_item_data =======================================================
@@ -968,7 +591,7 @@ player_t* parse_player( sim_t*             sim,
 bool download_item_data( item_t& item, cache::behavior_e caching )
 {
   rapidjson::Document js;
-  if ( ! download_id( js, item.player -> region_str, item.parsed.data.id, item.sim -> apikey, caching ) || 
+  if ( ! download_id( item.sim, js, item.player -> region_str, item.parsed.data.id, item.sim -> apikey, caching ) ||
        js.HasParseError() )
   {
     if ( caching != cache::ONLY )
@@ -1188,10 +811,11 @@ bool download_roster( rapidjson::Document& d,
   }
 
   std::string result;
-  if ( ! http::get( result, url, cleanurl, caching ) )
+  if ( ! download( sim, d, result, url, cleanurl, caching ) )
+  {
     return false;
+  }
 
-  d.Parse< 0 >( result.c_str() );
   if ( d.HasParseError() )
   {
     sim -> errorf( "BCP API: Unable to parse guild from '%s': Parse error '%s' @ %lu\n",
@@ -1213,34 +837,6 @@ bool download_roster( rapidjson::Document& d,
 }
 
 } // close anonymous namespace ==============================================
-
-// bcp_api::download_player_html =============================================
-
-player_t* bcp_api::download_player_html( sim_t*             sim,
-                                         const std::string& region,
-                                         const std::string& server,
-                                         const std::string& name,
-                                         const std::string& talents,
-                                         cache::behavior_e  caching )
-{
-  sim -> current_name = name;
-
-  player_spec_t player;
-
-  std::string battlenet = "http://" + region + ".battle.net/";
-
-  player.url = battlenet + "wow/en/character/" + server + '/' + name + "/advanced";
-  player.cleanurl = player.url;
-  player.origin = battlenet + "wow/en/character/" + server + '/' + name + "/advanced";
-
-  player.region = region;
-  player.server = server;
-  player.name = name;
-
-  player.talent_spec = talents;
-
-  return parse_player_html( sim, player, caching );
-}
 
 // bcp_api::download_player =================================================
 
@@ -1292,11 +888,7 @@ player_t* bcp_api::download_player( sim_t*             sim,
 
   player.talent_spec = talents;
 
-  player_t* p = parse_player( sim, player, caching );
-  if ( !p )
-    return download_player_html( sim, region, server, name, talents, caching );
-  else
-    return p;
+  return parse_player( sim, player, caching );
 }
 
 // bcp_api::from_local_json =================================================
@@ -1396,30 +988,6 @@ bool bcp_api::download_guild( sim_t* sim,
     std::cout << "Downloading character: " << cname << std::endl;
     download_player( sim, region, server, cname, "active", caching );
   }
-
-  return true;
-}
-
-// bcp_api::download_glyph ==================================================
-
-bool bcp_api::download_glyph( player_t*          player,
-                              std::string&       glyph_name,
-                              const std::string& glyph_id,
-                              cache::behavior_e  caching )
-{
-  const std::string& region =
-    ( player -> region_str.empty() ? player -> sim -> default_region_str : player -> region_str );
-
-  unsigned glyphid = strtoul( glyph_id.c_str(), nullptr, 10 );
-  rapidjson::Document js;
-  if ( ! download_id( js, region, glyphid, player -> sim -> apikey, caching ) || js.HasParseError() || ! js.HasMember( "name" ) )
-  {
-    if ( caching != cache::ONLY )
-      player -> sim -> errorf( "BCP API: Unable to download glyph id '%s'\n", glyph_id.c_str() );
-    return false;
-  }
-
-  glyph_name = js[ "name" ].GetString();
 
   return true;
 }

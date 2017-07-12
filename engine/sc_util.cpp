@@ -131,22 +131,6 @@ bool util::str_compare_ci( const std::string& l,
     return std::equal( l.begin(), l.end(), r.begin(), pred_ci );
 }
 
-// glyph_name ===============================================================
-
-std::string& util::glyph_name( std::string& n )
-{
-  tokenize( n );
-
-  if ( n.compare( 0, 7, "glyph__" ) == 0 )
-    n.erase( 0, 7 );
-  else if ( n.compare( 0, 13, "glyph_of_the_" ) == 0 )
-    n.erase( 0, 13 );
-  else if ( n.compare( 0, 9, "glyph_of_" ) == 0 )
-    n.erase( 0, 9 );
-
-  return n;
-}
-
 // str_prefix_ci ============================================================
 
 bool util::str_prefix_ci( const std::string& str,
@@ -1363,6 +1347,94 @@ const char* util::stat_type_gem( stat_e stat )
   }
 }
 
+// Specialization string without the class name in it.
+
+const char* util::spec_string_no_class( const player_t& p )
+{
+  // Player spec
+  switch ( p.specialization() )
+  {
+    case DEATH_KNIGHT_BLOOD:
+    return "Blood";
+    case DEATH_KNIGHT_FROST:
+    return "Frost";
+    case DEATH_KNIGHT_UNHOLY:
+    return "Unholy";
+    case DEMON_HUNTER_HAVOC:
+    return "Havoc";
+    case DEMON_HUNTER_VENGEANCE:
+    return "Vengeance";
+    case DRUID_BALANCE:
+    return "Balance";
+    case DRUID_FERAL:
+    return "Feral";
+    case DRUID_GUARDIAN:
+    return "Guardian";
+    case DRUID_RESTORATION:
+    return "Restoration";
+    case HUNTER_BEAST_MASTERY:
+    return "BeastMastery";
+    case HUNTER_MARKSMANSHIP:
+    return "Marksmanship";
+    case HUNTER_SURVIVAL:
+    return "Survival";
+    case MAGE_ARCANE:
+    return "Arcane";
+    case MAGE_FIRE:
+    return "Fire";
+    case MAGE_FROST:
+    return "Frost";
+    case MONK_BREWMASTER:
+    return "Brewmaster";
+    case MONK_MISTWEAVER:
+    return "Mistweaver";
+    case MONK_WINDWALKER:
+    return "Windwalker";
+    case PALADIN_HOLY:
+    return "Holy";
+    case PALADIN_PROTECTION:
+    return "Protection";
+    case PALADIN_RETRIBUTION:
+    return "Retribution";
+    case PRIEST_DISCIPLINE:
+    return "Discipline";
+    case PRIEST_HOLY:
+    return "Holy";
+    case PRIEST_SHADOW:
+    return "Shadow";
+    case ROGUE_ASSASSINATION:
+    return "Assassination";
+    case ROGUE_OUTLAW:
+    return "Outlaw";
+    case ROGUE_SUBTLETY:
+    return "Subtlety";
+    case SHAMAN_ELEMENTAL:
+    return "Elemental";
+    case SHAMAN_ENHANCEMENT:
+    return "Enhancement";
+    case SHAMAN_RESTORATION:
+    return "Restoration";
+    case WARLOCK_AFFLICTION:
+    return "Affliction";
+    case WARLOCK_DEMONOLOGY:
+    return "Demonology";
+    case WARLOCK_DESTRUCTION:
+    return "Destruction";
+    case WARRIOR_ARMS:
+    return "Arms";
+    case WARRIOR_FURY:
+    return "Fury";
+    case WARRIOR_PROTECTION:
+    return "Protection";
+
+    default:
+    // if this is a pet or an unknown spec, the AMR link is pointless anyway
+    assert( false );
+    break;
+  }
+  return nullptr;
+}
+
 // parse_stat_type ==========================================================
 
 stat_e util::parse_stat_type( const std::string& name )
@@ -2033,6 +2105,20 @@ const char* util::item_quality_string( int quality )
   }
 }
 
+// retarget_event_string ====================================================
+const char* util::retarget_event_string( retarget_event_e event )
+{
+  switch ( event )
+  {
+    case ACTOR_ARISE: return "actor_arise";
+    case ACTOR_DEMISE: return "actor_demise";
+    case ACTOR_INVULNERABLE: return "actor_invulnerable";
+    case ACTOR_VULNERABLE: return "actor_vulnnerable";
+    case SELF_ARISE: return "self_arise";
+    default: return "unknown";
+  }
+}
+
 // specialization_string ====================================================
 
 const char* util::specialization_string( specialization_e spec )
@@ -2698,6 +2784,11 @@ void util::tokenize( std::string& name )
   }
 }
 
+std::string util::tokenize_fn( std::string name )
+{
+  tokenize(name);
+  return name;
+}
 // inverse_tokenize =========================================================
 
 std::string util::inverse_tokenize( const std::string& name )

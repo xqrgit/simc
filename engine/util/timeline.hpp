@@ -16,6 +16,8 @@
 #include "sample_data.hpp"
 #include "sc_timespan.hpp"
 
+struct sim_t;
+
 template <typename Fwd, typename Out>
 void sliding_window_average( Fwd first, Fwd last, unsigned window, Out out )
 {
@@ -97,7 +99,8 @@ public:
   {
     if ( index >= _data.capacity() ) // we need to reallocate
     {
-      _data.reserve( std::max( size_t( 10 ), _data.capacity() * 2 ) );
+      // Reserve data less aggressively than doubling the size every time
+      _data.reserve( std::max( size_t( 10 ), static_cast<size_t>( index * 1.25 ) ) );
       _data.resize( index + 1 );
     }
     else if ( index >= _data.size() ) // we still have enough capacity left, but need to resize up to index

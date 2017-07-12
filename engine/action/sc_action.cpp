@@ -99,10 +99,11 @@ struct player_gcd_event_t : public player_event_t
   }
 };
 
-// Hack to bypass some of the full execution chain to be able to re-use normal actions as "off gcd
-// actions" (usable during gcd). Will directly execute the action (instead of going through
-// schedule_execute processing), and parts of our execution chain where relevant (e.g., line
-// cooldown, stats tracking).
+/**
+ * Hack to bypass some of the full execution chain to be able to re-use normal actions as "off gcd actions" (usable
+ * during gcd). Will directly execute the action (instead of going through schedule_execute processing), and parts of
+ * our execution chain where relevant (e.g., line cooldown, stats tracking).
+ */
 void do_off_gcd_execute( action_t* action )
 {
   action -> execute();
@@ -234,10 +235,7 @@ struct action_execute_event_t : public player_event_t
     {
       // Action target must follow any potential pre-execute-state target if it differs from the
       // current (default) target of the action.
-      if ( target != action -> target )
-      {
-        action -> target = target;
-      }
+      action -> set_target( target );
       action -> execute();
     }
 
@@ -263,20 +261,6 @@ struct action_execute_event_t : public player_event_t
     {
       p() -> off_gcd = make_event<player_gcd_event_t>( sim(), *p(), timespan_t::zero() );
     }
-  }
-};
-
-struct aoe_target_list_callback_t
-{
-  action_t* action;
-
-  aoe_target_list_callback_t( action_t* a ) :
-    action( a ) {}
-
-  void operator()(player_t*)
-  {
-    // Invalidate target cache
-    action -> target_cache.is_valid = false;
   }
 };
 
@@ -340,7 +324,9 @@ action_priority_t* action_priority_list_t::add_action( const player_t* p,
   const spell_data_t* s = p -> find_class_spell( name );
   if ( s == spell_data_t::not_found() )
     s = p -> find_specialization_spell( name );
-  return add_action( p, s, dbc::get_token( s -> id() ), action_options, comment );
+  std::string tokenized_name = s -> name_cstr();
+  util::tokenize( tokenized_name );
+  return add_action( p, s, tokenized_name, action_options, comment );
 }
 
 /**
@@ -361,8 +347,29 @@ action_priority_t* action_priority_list_t::add_talent( const player_t* p,
                                                        const std::string& action_options,
                                                        const std::string& comment )
 {
-  const spell_data_t* s = p -> find_talent_spell( name, "", SPEC_NONE, false, false );
-  return add_action( p, s, dbc::get_token( s -> id() ), action_options, comment );
+  const spell_data_t* s = p -> find_talent_spell( name, SPEC_NONE, false, false );
+  std::string tokenized_name = s -> name_cstr();
+  util::tokenize( tokenized_name );
+  return add_action( p, s, tokenized_name, action_options, comment );
+}
+
+action_t::options_t::options_t()
+  : moving( -1 ),
+    wait_on_ready( -1 ),
+    max_cycle_targets(),
+    target_number(),
+    interrupt(),
+    chain(),
+    cycle_targets(),
+    cycle_players(),
+    interrupt_immediate(),
+    if_expr_str(),
+    target_if_str(),
+    interrupt_if_expr_str(),
+    early_chain_if_expr_str(),
+    sync_str(),
+    target_str()
+{
 }
 
 action_t::action_t( action_e       ty,
@@ -372,12 +379,12 @@ action_t::action_t( action_e       ty,
   s_data( s ? s : spell_data_t::nil() ),
   sim( p -> sim ),
   type( ty ),
-  name_str( token ),
+  name_str( util::tokenize_fn(token) ),
   player( p ),
   target( p -> target ),
-  item( 0 ),
+  item(),
+  weapon(),
   default_target( p -> target ),
-  target_cache(),
   school( SCHOOL_NONE ),
   id(),
   internal_id( as<unsigned>( p -> get_action_id( name_str ) ) ),
@@ -392,7 +399,8 @@ action_t::action_t( action_e       ty,
   background(),
   use_off_gcd(),
   interrupt_auto_attack( true ),
-  ignore_false_positive( false ),
+  ignore_false_positive(),
+  action_skill( p -> base.skill ),
   direct_tick(),
   repeating(),
   harmful( true ),
@@ -404,120 +412,104 @@ action_t::action_t( action_e       ty,
   may_parry(),
   may_glance(),
   may_block(),
-  may_crush(),
   may_crit(),
   tick_may_crit(),
   tick_zero(),
   hasted_ticks(),
+  consume_per_tick_(),
+  split_aoe_damage(),
+  normalize_weapon_speed(),
+  ground_aoe(),
+  round_base_dmg( true),
+  dynamic_tick_action( true), // WoD updates everything on tick by default. If you need snapshotted values for a periodic effect, use persistent multipliers.
+  interrupt_immediate_occurred(),
+  hit_any_target(),
   dot_behavior( DOT_REFRESH ),
-  ability_lag( timespan_t::zero() ),
-  ability_lag_stddev( timespan_t::zero() ),
+  ability_lag(),
+  ability_lag_stddev(),
   rp_gain(),
-  min_gcd( timespan_t() ),
+  min_gcd(),
   gcd_haste( HASTE_NONE ),
-  trigger_gcd( player -> base_gcd ),
-  range(),
-  radius(),
+  trigger_gcd( p -> base_gcd ),
+  range(-1.0),
+  radius(-1.0),
   weapon_power_mod(),
   attack_power_mod(),
   spell_power_mod(),
-  base_execute_time( timespan_t::zero() ),
-  base_tick_time( timespan_t::zero() ),
-  dot_duration( timespan_t::zero() ),
+  amount_delta(),
+  base_execute_time(),
+  base_tick_time(),
+  dot_duration(),
   dot_max_stack( 1 ),
+  base_costs(),
+  secondary_costs(),
+  base_costs_per_tick(),
+  base_dd_min(),
+  base_dd_max(),
+  base_td(),
+  base_dd_multiplier( 1.0 ),
+  base_td_multiplier( 1.0 ),
+  base_multiplier( 1.0 ),
+  base_hit(),
+  base_crit(),
+  crit_multiplier( 1.0 ),
+  crit_bonus_multiplier( 1.0 ),
+  crit_bonus(),
+  base_dd_adder(),
+  base_ta_adder(),
+  weapon_multiplier( 1.0 ),
+  chain_multiplier( 1.0 ),
+  chain_bonus_damage(),
+  base_aoe_multiplier( 1.0 ),
   base_recharge_multiplier( 1.0 ),
+  base_teleport_distance(),
+  travel_speed(),
+  energize_amount(),
   movement_directionality( MOVEMENT_NONE ),
-  base_teleport_distance( 0.0 ),
-  time_to_execute( timespan_t::zero() ),
-  time_to_travel( timespan_t::zero() ),
+  parent_dot(),
+  child_action(),
+  tick_action(),
+  execute_action(),
+  impact_action(),
+  gain( p -> get_gain( name_str ) ),
+  energize_type( ENERGIZE_NONE ),
+  energize_resource( RESOURCE_NONE ),
+  cooldown( p -> get_cooldown( name_str ) ),
+  internal_cooldown( p -> get_cooldown( name_str + "_internal" ) ),
+  stats(p -> get_stats( name_str, this )),
+  execute_event(),
+  queue_event(),
+  time_to_execute(),
+  time_to_travel(),
+  last_resource_cost(),
+  num_targets_hit(),
+  marker(),
+  option(),
+  interrupt_global( false ),
+  if_expr(),
+  target_if_mode( TARGET_IF_NONE ),
+  target_if_expr(),
+  interrupt_if_expr(),
+  early_chain_if_expr(),
+  sync_action(),
+  signature_str(),
   target_specific_dot( false ),
+  action_list(),
+  starved_proc(),
   total_executions(),
-  line_cooldown( cooldown_t( "line_cd", *p ) )
+  line_cooldown( "line_cd", *p ),
+  signature(),
+  execute_state(),
+  pre_execute_state(),
+  snapshot_flags(),
+  update_flags( STATE_TGT_MUL_DA | STATE_TGT_MUL_TA | STATE_TGT_CRIT),
+  target_cache(),
+  options(),
+  state_cache(),
+  travel_events()
 {
-  dot_behavior                   = DOT_REFRESH;
-  trigger_gcd                    = player -> base_gcd;
-  range                          = -1.0;
-  radius                         = -1.0;
-
-  amount_delta                   = 0.0;
-  base_dd_min                    = 0.0;
-  base_dd_max                    = 0.0;
-  base_td                        = 0.0;
-  base_td_multiplier             = 1.0;
-  base_dd_multiplier             = 1.0;
-  base_multiplier                = 1.0;
-  base_hit                       = 0.0;
-  base_crit                      = 0.0;
-  rp_gain                        = 0.0;
-  crit_multiplier                = 1.0;
-  crit_bonus_multiplier          = 1.0;
-  base_dd_adder                  = 0.0;
-  base_ta_adder                  = 0.0;
-  weapon                         = nullptr;
-  weapon_multiplier              = 1.0;
-  chain_multiplier               = 1.0;
-  chain_bonus_damage             = 0.0;
-  base_aoe_multiplier            = 1.0;
-  split_aoe_damage               = false;
-  normalize_weapon_speed         = false;
-  stats                          = nullptr;
-  execute_event                  = nullptr;
-  queue_event                    = nullptr;
-  travel_speed                   = 0.0;
-  resource_consumed              = 0.0;
-  moving                         = -1;
-  wait_on_ready                  = -1;
-  interrupt                      = false;
-  chain                          = 0;
-  cycle_targets                  = 0;
-  cycle_players                  = 0;
-  max_cycle_targets              = 0;
-  target_number                  = 0;
-  interrupt_immediate            = 0;
-  interrupt_immediate_occurred   = false;
-  round_base_dmg                 = true;
-  if_expr_str.clear();
-  if_expr                        = NULL;
-  target_if_str.clear();
-  target_if_expr                 = 0;
-  target_if_mode = TARGET_IF_NONE;
-  interrupt_if_expr_str.clear();
-  interrupt_if_expr              = NULL;
-  early_chain_if_expr_str.clear();
-  early_chain_if_expr            = NULL;
-  sync_str.clear();
-  sync_action                    = NULL;
-  marker                         = 0;
-  last_reaction_time             = timespan_t::zero();
-  tick_action                    = NULL;
-  execute_action                 = NULL;
-  impact_action                  = NULL;
-  dynamic_tick_action            = true; // WoD updates everything on tick by default. If you need snapshotted values for a periodic effect, use persistent multipliers.
-  starved_proc                   = NULL;
-  action_skill                   = player -> base.skill;
-  energize_resource              = RESOURCE_NONE;
-  energize_type                  = ENERGIZE_NONE;
-  energize_amount                = 0;
-  hit_any_target                 = false;
-
-  // New Stuff
-  snapshot_flags = 0;
-  update_flags = STATE_TGT_MUL_DA | STATE_TGT_MUL_TA | STATE_TGT_CRIT;
-  execute_state = 0;
-  pre_execute_state = 0;
-  action_list = 0;
-  parent_dot = 0;
-  ground_aoe = false;
-  state_cache = 0;
-  consume_per_tick_ = false;
-
-  range::fill( base_costs, 0.0 );
-  range::fill( secondary_costs, 0.0 );
-  range::fill( base_costs_per_tick, 0.0 );
-
+  assert( option.cycle_targets == 0 );
   assert( !name_str.empty() && "Abilities must have valid name_str entries!!" );
-
-  util::tokenize( name_str );
 
   if ( sim -> initialized )
   {
@@ -528,7 +520,7 @@ action_t::action_t( action_e       ty,
   if ( sim -> current_iteration > 0 )
   {
     sim -> errorf( "Player %s creating action %s ouside of the first iteration", player -> name(), name() );
-    assert( 0 );
+    assert( false );
   }
 
   if ( sim -> debug )
@@ -541,12 +533,6 @@ action_t::action_t( action_e       ty,
   }
 
   player -> action_list.push_back( this );
-
-  cooldown = player -> get_cooldown( name_str );
-  internal_cooldown = player -> get_cooldown( name_str + "_internal" );
-
-  stats = player -> get_stats( name_str, this );
-  gain  = player -> get_gain( name_str );
 
   if ( data().ok() )
   {
@@ -575,24 +561,25 @@ action_t::action_t( action_e       ty,
   add_option( opt_deprecated( "vulnerable", "if=target.debuff.vulnerable.react" ) );
   add_option( opt_deprecated( "label", "N/A" ) );
 
-  add_option( opt_string( "if", if_expr_str ) );
-  add_option( opt_string( "interrupt_if", interrupt_if_expr_str ) );
-  add_option( opt_string( "early_chain_if", early_chain_if_expr_str ) );
-  add_option( opt_bool( "interrupt", interrupt ) );
-  add_option( opt_bool( "chain", chain ) );
-  add_option( opt_bool( "cycle_targets", cycle_targets ) );
-  add_option( opt_bool( "cycle_players", cycle_players ) );
-  add_option( opt_int( "max_cycle_targets", max_cycle_targets ) );
-  add_option( opt_string( "target_if", target_if_str ) );
-  add_option( opt_bool( "moving", moving ) );
-  add_option( opt_string( "sync", sync_str ) );
-  add_option( opt_bool( "wait_on_ready", wait_on_ready ) );
-  add_option( opt_string( "target", target_str ) );
+  add_option( opt_string( "if", option.if_expr_str ) );
+  add_option( opt_string( "interrupt_if", option.interrupt_if_expr_str ) );
+  add_option( opt_string( "early_chain_if", option.early_chain_if_expr_str ) );
+  add_option( opt_bool( "interrupt", option.interrupt ) );
+  add_option( opt_bool( "interrupt_global", interrupt_global ) );
+  add_option( opt_bool( "chain", option.chain ) );
+  add_option( opt_bool( "cycle_targets", option.cycle_targets ) );
+  add_option( opt_bool( "cycle_players", option.cycle_players ) );
+  add_option( opt_int( "max_cycle_targets", option.max_cycle_targets ) );
+  add_option( opt_string( "target_if", option.target_if_str ) );
+  add_option( opt_bool( "moving", option.moving ) );
+  add_option( opt_string( "sync", option.sync_str ) );
+  add_option( opt_bool( "wait_on_ready", option.wait_on_ready ) );
+  add_option( opt_string( "target", option.target_str ) );
   add_option( opt_timespan( "line_cd", line_cooldown.duration ) );
   add_option( opt_float( "action_skill", action_skill ) );
   // Interrupt_immediate forces a channeled action to interrupt on tick (if requested), even if the
   // GCD has not elapsed.
-  add_option( opt_bool( "interrupt_immediate", interrupt_immediate ) );
+  add_option( opt_bool( "interrupt_immediate", option.interrupt_immediate ) );
 }
 
 action_t::~action_t()
@@ -696,6 +683,9 @@ void action_t::parse_effect_data( const spelleffect_data_t& spelleffect_data )
     return;
   }
 
+  // Only use item level-based scaling if there's no max scaling level defined for the spell
+  bool item_scaling = item && data().max_scaling_level() == 0;
+
   // Technically, there could be both a single target and an aoe effect in a single spell, but that
   // probably will never happen.
   if ( spelleffect_data.chain_target() > 1 )
@@ -712,23 +702,23 @@ void action_t::parse_effect_data( const spelleffect_data_t& spelleffect_data )
       spell_power_mod.direct  = spelleffect_data.sp_coeff();
       attack_power_mod.direct = spelleffect_data.ap_coeff();
       amount_delta            = spelleffect_data.m_delta();
-      base_dd_min      = item ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
-      base_dd_max      = item ? spelleffect_data.max( item ) : spelleffect_data.max( player, player -> level() );
+      base_dd_min      = item_scaling ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
+      base_dd_max      = item_scaling ? spelleffect_data.max( item ) : spelleffect_data.max( player, player -> level() );
       radius           = spelleffect_data.radius_max();
       break;
 
     case E_NORMALIZED_WEAPON_DMG:
       normalize_weapon_speed = true;
     case E_WEAPON_DAMAGE:
-      base_dd_min      = item ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
-      base_dd_max      = item ? spelleffect_data.max( item ) : spelleffect_data.max( player, player -> level() );
+      base_dd_min      = item_scaling ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
+      base_dd_max      = item_scaling ? spelleffect_data.max( item ) : spelleffect_data.max( player, player -> level() );
       weapon           = &( player -> main_hand_weapon );
       radius           = spelleffect_data.radius_max();
       break;
 
     case E_WEAPON_PERCENT_DAMAGE:
       weapon            = &( player -> main_hand_weapon );
-      weapon_multiplier = item ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
+      weapon_multiplier = item_scaling ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
       radius            = spelleffect_data.radius_max();
       break;
 
@@ -747,7 +737,7 @@ void action_t::parse_effect_data( const spelleffect_data_t& spelleffect_data )
           spell_power_mod.tick  = spelleffect_data.sp_coeff();
           attack_power_mod.tick = spelleffect_data.ap_coeff();
           radius           = spelleffect_data.radius_max();
-          base_td          = item ? spelleffect_data.average( item ) : spelleffect_data.average( player, player -> level() );
+          base_td          = item_scaling ? spelleffect_data.average( item ) : spelleffect_data.average( player, player -> level() );
         case A_PERIODIC_ENERGIZE:
         case A_PERIODIC_TRIGGER_SPELL_WITH_VALUE:
         case A_PERIODIC_HEALTH_FUNNEL:
@@ -766,8 +756,8 @@ void action_t::parse_effect_data( const spelleffect_data_t& spelleffect_data )
           spell_power_mod.direct  = spelleffect_data.sp_coeff();
           attack_power_mod.direct = spelleffect_data.ap_coeff();
           amount_delta            = spelleffect_data.m_delta();
-          base_dd_min      = item ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
-          base_dd_max      = item ? spelleffect_data.max( item ) : spelleffect_data.max( player, player -> level() );
+          base_dd_min      = item_scaling ? spelleffect_data.min( item ) : spelleffect_data.min( player, player -> level() );
+          base_dd_max      = item_scaling ? spelleffect_data.max( item ) : spelleffect_data.max( player, player -> level() );
           radius           = spelleffect_data.radius_max();
           break;
         case A_ADD_FLAT_MODIFIER:
@@ -803,20 +793,20 @@ void action_t::parse_effect_data( const spelleffect_data_t& spelleffect_data )
 void action_t::parse_target_str()
 {
   // FIXME: Move into constructor when parse_action is called from there.
-  if ( ! target_str.empty() )
+  if ( ! option.target_str.empty() )
   {
-    if ( target_str[ 0 ] >= '0' && target_str[ 0 ] <= '9' )
+    if ( option.target_str[ 0 ] >= '0' && option.target_str[ 0 ] <= '9' )
     {
-      target_number = atoi( target_str.c_str() );
-      player_t* p = find_target_by_number( target_number );
+      option.target_number = atoi( option.target_str.c_str() );
+      player_t* p = find_target_by_number( option.target_number );
       // Numerical targeting is intended to be dynamic, so don't give an error message if we can't find the target yet
       if ( p ) target = p;
     }
-    else if ( util::str_compare_ci( target_str, "self" ) )
+    else if ( util::str_compare_ci( option.target_str, "self" ) )
       target = this -> player;
     else
     {
-      player_t* p = sim -> find_player( target_str );
+      player_t* p = sim -> find_player( option.target_str );
 
       if ( p )
         target = p;
@@ -884,8 +874,9 @@ double action_t::base_cost() const
   return c;
 }
 
-// action_t::cost ===========================================================
-
+/**
+ * Resource cost of the action for current_resource()
+ */
 double action_t::cost() const
 {
   if ( ! harmful && ! player -> in_combat )
@@ -915,8 +906,12 @@ double action_t::cost() const
 
   c -= player -> current.resource_reduction[ get_school() ];
 
-  if ( cr == RESOURCE_MANA && player -> buffs.courageous_primal_diamond_lucidity -> check() )
+  if ( cr == RESOURCE_MANA &&
+       player -> buffs.courageous_primal_diamond_lucidity &&
+       player -> buffs.courageous_primal_diamond_lucidity -> check() )
+  {
     c = 0;
+  }
 
   if ( c < 0 ) c = 0;
 
@@ -969,7 +964,7 @@ timespan_t action_t::gcd() const
   return gcd_;
 }
 
-// False Positive skill chance, executes command regardless of expression.
+/** False Positive skill chance, executes command regardless of expression. */
 double action_t::false_positive_pct() const
 {
   double failure_rate = 0.0;
@@ -1019,10 +1014,7 @@ timespan_t action_t::travel_time() const
   if ( travel_speed == 0 ) return timespan_t::zero();
 
   double distance;
-  if ( sim -> distance_targeting_enabled )
-    distance = player -> get_player_distance( *target );
-  else
-    distance = player -> current.distance;
+  distance = player -> get_player_distance( *target );
 
   if ( execute_state && execute_state -> target )
     distance += execute_state -> target -> height;
@@ -1112,13 +1104,14 @@ double action_t::calculate_tick_amount( action_state_t* state, double dot_multip
   // Record raw amount to state
   state -> result_raw = amount;
 
-  if ( state -> result == RESULT_CRIT )
-    amount *= 1.0 + total_crit_bonus( state );
-
   amount *= dot_multiplier;
 
   // Record total amount to state
   state -> result_total = amount;
+
+  // Apply crit damage bonus immediately to periodic damage since there is no travel time (and
+  // subsequent impact).
+  amount = calculate_crit_damage_bonus( state );
 
   if ( sim -> debug )
   {
@@ -1220,10 +1213,6 @@ double action_t::calculate_direct_amount( action_state_t* state ) const
 
     amount *= sim -> averaged_range( min_glance, max_glance ); // 0.75 against +3 targets.
   }
-  else if ( state -> result == RESULT_CRIT )
-  {
-    amount *= 1.0 + total_crit_bonus( state );
-  }
 
   if ( ! sim -> average_range ) amount = floor( amount + rng().real() );
 
@@ -1247,7 +1236,18 @@ double action_t::calculate_direct_amount( action_state_t* state ) const
     state -> result_total = amount;
     return amount;
   }
+}
 
+// action_t::calculate_crit_damage_bonus ====================================
+
+double action_t::calculate_crit_damage_bonus( action_state_t* state ) const
+{
+  if ( state -> result == RESULT_CRIT )
+  {
+    state -> result_total *= 1.0 + total_crit_bonus( state );
+  }
+
+  return state -> result_total;
 }
 
 // action_t::consume_resource ===============================================
@@ -1258,16 +1258,16 @@ void action_t::consume_resource()
 
   if ( cr == RESOURCE_NONE || base_cost() == 0 || proc ) return;
 
-  resource_consumed = cost();
+  last_resource_cost = cost();
 
-  player -> resource_loss( cr, resource_consumed, 0, this );
+  player -> resource_loss( cr, last_resource_cost, nullptr, this );
 
   if ( sim -> log )
     sim -> out_log.printf( "%s consumes %.1f %s for %s (%.0f)", player -> name(),
-                   resource_consumed, util::resource_type_string( cr ),
+                   last_resource_cost, util::resource_type_string( cr ),
                    name(), player -> resources.current[ cr ] );
 
-  stats -> consume_resource( current_resource(), resource_consumed );
+  stats -> consume_resource( current_resource(), last_resource_cost );
 }
 
 // action_t::num_targets  ==================================================
@@ -1330,8 +1330,7 @@ std::vector< player_t* >& action_t::target_list() const
   if ( !target_cache.is_valid )
   {
     available_targets( target_cache.list ); // This grabs the full list of targets, which will also pickup various awfulness that some classes have.. such as prismatic crystal.
-    if ( sim -> distance_targeting_enabled )
-      check_distance_targeting( target_cache.list );
+    check_distance_targeting( target_cache.list );
     target_cache.is_valid = true;
   }
 
@@ -1447,7 +1446,16 @@ void action_t::execute()
       s -> target = tl[ t ];
       s -> n_targets = std::min( num_targets, tl.size() );
       s -> chain_target = as<int>( t );
-      if ( ! pre_execute_state ) snapshot_state( s, amount_type( s ) );
+      if ( ! pre_execute_state )
+      {
+        snapshot_state( s, amount_type( s ) );
+      }
+      // Even if pre-execute state is defined, we need to snapshot target-specific state variables
+      // for aoe spells.
+      else
+      {
+        snapshot_internal( s, snapshot_flags & STATE_TARGET, amount_type( s ) );
+      }
       s -> result = calculate_result( s );
       s -> block_result = calculate_block_result( s );
 
@@ -1484,7 +1492,7 @@ void action_t::execute()
     player -> do_dynamic_regen();
   }
 
-  update_ready(); // Based on testing with warrior mechanics, Blizz updates cooldowns before consuming resources. 
+  update_ready(); // Based on testing with warrior mechanics, Blizz updates cooldowns before consuming resources.
                   // This is very rarely relevant.
   consume_resource();
 
@@ -1530,7 +1538,7 @@ void action_t::execute()
   // target caches do not get into an inconsistent state, if the target of this
   // action (defined by a number) spawns/despawns dynamically during an
   // iteration.
-  if ( target_number > 0 && target != default_target )
+  if ( option.target_number > 0 && target != default_target )
   {
     target = default_target;
   }
@@ -1611,8 +1619,11 @@ void action_t::last_tick( dot_t* d )
   if ( get_school() == SCHOOL_PHYSICAL )
   {
     buff_t* b = d -> state -> target -> debuffs.bleeding;
-    if ( b -> current_value > 0 ) b -> current_value -= 1.0;
-    if ( b -> current_value == 0 ) b -> expire();
+    if ( b )
+    {
+      if ( b -> current_value > 0 ) b -> current_value -= 1.0;
+      if ( b -> current_value == 0 ) b -> expire();
+    }
   }
 
   if ( channeled && player -> channeling == this )
@@ -1674,7 +1685,19 @@ void action_t::queue_execute( bool off_gcd )
   {
     if ( off_gcd )
     {
-      do_off_gcd_execute( this );
+      // If the charge cooldown is recharging on the same timestamp, we need to create a zero-time
+      // event to execute the (queued) action, so that the charge cooldown can regenerate.
+      if ( cooldown -> charges > 1 && cooldown -> current_charge == 0 &&
+           cooldown -> recharge_event &&
+           cooldown -> recharge_event -> remains() == timespan_t::zero() )
+      {
+        queue_event = make_event<queued_action_execute_event_t>( *sim, this, timespan_t::zero(), off_gcd );
+        player -> queueing = this;
+      }
+      else
+      {
+        do_off_gcd_execute( this );
+      }
     }
     else
     {
@@ -1842,6 +1865,9 @@ void action_t::update_ready( timespan_t cd_duration /* = timespan_t::min() */ )
 
 bool action_t::usable_moving() const
 {
+  if ( player -> buffs.norgannons_foresight_ready && player -> buffs.norgannons_foresight_ready -> check() )
+    return true;
+
   if ( execute_time() > timespan_t::zero() )
     return false;
 
@@ -1877,7 +1903,7 @@ bool action_t::ready()
   if ( player -> is_moving() && ! usable_moving() )
     return false;
 
-  if ( moving != -1 && moving != ( player -> is_moving() ? 1 : 0 ) )
+  if ( option.moving != -1 && option.moving != ( player -> is_moving() ? 1 : 0 ) )
     return false;
 
   if ( ! player -> resource_available( current_resource(), cost() ) )
@@ -1897,16 +1923,21 @@ bool action_t::ready()
       {
         target_cache.is_valid = false;
       }
+      if ( child_action.size() > 0 )
+      {// If spell_targets is used on the child instead of the parent action, we need to reset the cache for that action as well.
+        for ( size_t i = 0; i < child_action.size(); i++ )
+          child_action[i] -> target_cache.is_valid = false;
+      }
       target = potential_target;
     }
     else
       return false;
   }
 
-  if ( cycle_targets )
+  if ( option.cycle_targets )
   {
     player_t* saved_target = target;
-    cycle_targets = 0;
+    option.cycle_targets = false;
     bool found_ready = false;
 
     // Note, need to take a copy of the original target list here, instead of a reference. Otherwise
@@ -1915,8 +1946,8 @@ bool action_t::ready()
     std::vector< player_t* > ctl = target_list();
     size_t num_targets = ctl.size();
 
-    if ( ( max_cycle_targets > 0 ) && ( ( size_t ) max_cycle_targets < num_targets ) )
-      num_targets = max_cycle_targets;
+    if ( ( option.max_cycle_targets > 0 ) && ( ( size_t ) option.max_cycle_targets < num_targets ) )
+      num_targets = option.max_cycle_targets;
 
     for ( size_t i = 0; i < num_targets; i++ )
     {
@@ -1928,7 +1959,7 @@ bool action_t::ready()
       }
     }
 
-    cycle_targets = 1;
+    option.cycle_targets = true;
 
     if ( found_ready )
     {
@@ -1946,18 +1977,18 @@ bool action_t::ready()
     return false;
   }
 
-  if ( cycle_players ) // Used when healing players in the raid.
+  if ( option.cycle_players ) // Used when healing players in the raid.
   {
     player_t* saved_target = target;
-    cycle_players = 0;
+    option.cycle_players = false;
     bool found_ready = false;
 
     std::vector<player_t*>& tl = sim -> player_no_pet_list.data();
 
     size_t num_targets = tl.size();
 
-    if ( ( max_cycle_targets > 0 ) && ( (size_t)max_cycle_targets < num_targets ) )
-      num_targets = max_cycle_targets;
+    if ( ( option.max_cycle_targets > 0 ) && ( (size_t)option.max_cycle_targets < num_targets ) )
+      num_targets = option.max_cycle_targets;
 
     for ( size_t i = 0; i < num_targets; i++ )
     {
@@ -1969,7 +2000,7 @@ bool action_t::ready()
       }
     }
 
-    cycle_players = 1;
+    option.cycle_players = true;
 
     if ( found_ready ) return true;
 
@@ -1978,11 +2009,11 @@ bool action_t::ready()
     return false;
   }
 
-  if ( target_number )
+  if ( option.target_number )
   {
     player_t* saved_target  = target;
-    int saved_target_number = target_number;
-    target_number = 0;
+    int saved_target_number = option.target_number;
+    option.target_number = 0;
 
     target = find_target_by_number( saved_target_number );
 
@@ -1990,7 +2021,7 @@ bool action_t::ready()
 
     if ( target ) is_ready = ready();
 
-    target_number = saved_target_number;
+    option.target_number = saved_target_number;
 
     if ( is_ready ) return true;
 
@@ -2000,10 +2031,10 @@ bool action_t::ready()
   }
 
   if ( sim -> distance_targeting_enabled && range > 0 &&
-    target -> get_player_distance( *player ) > range + target -> combat_reach )
+    player -> get_player_distance( *target ) > range + target -> combat_reach )
     return false;
 
-  if ( target -> debuffs.invulnerable -> check() && harmful )
+  if ( target -> debuffs.invulnerable && target -> debuffs.invulnerable -> check() && harmful )
     return false;
 
   if ( target -> is_sleeping() )
@@ -2037,20 +2068,20 @@ void action_t::init()
 
   assert( !( n_targets() && channeled ) && "DONT create a channeled aoe spell!" );
 
-  if ( !sync_str.empty() )
+  if ( !option.sync_str.empty() )
   {
-    sync_action = player -> find_action( sync_str );
+    sync_action = player -> find_action( option.sync_str );
 
     if ( !sync_action )
     {
-      sim -> errorf( "Unable to find sync action '%s' for primary action '%s'\n", sync_str.c_str(), name() );
+      sim -> errorf( "Unable to find sync action '%s' for primary action '%s'\n", option.sync_str.c_str(), name() );
       sim -> cancel();
     }
   }
 
-  if ( cycle_targets && target_number )
+  if ( option.cycle_targets && option.target_number )
   {
-    target_number = 0;
+    option.target_number = 0;
     sim -> errorf( "Player %s trying to use both cycle_targets and a numerical target for action %s - defaulting to cycle_targets\n", player -> name(), name() );
   }
 
@@ -2147,8 +2178,6 @@ void action_t::init()
     sim -> out_debug.printf( "%s - radius %.1f - range - %.1f", name(), radius, range );
 #endif
 
-  init_target_cache();
-
   consume_per_tick_ = range::find_if( base_costs_per_tick, []( const double& d ) { return d != 0; } ) != base_costs_per_tick.end();
 
   // Setup default target in init
@@ -2168,13 +2197,13 @@ bool action_t::init_finished()
 {
   bool ret = true;
 
-  if ( !target_if_str.empty() )
+  if ( !option.target_if_str.empty() )
   {
-    std::string::size_type offset = target_if_str.find( ':' );
+    std::string::size_type offset = option.target_if_str.find( ':' );
     if ( offset != std::string::npos )
     {
-      std::string target_if_type_str = target_if_str.substr( 0, offset );
-      target_if_str.erase( 0, offset + 1 );
+      std::string target_if_type_str = option.target_if_str.substr( 0, offset );
+      option.target_if_str.erase( 0, offset + 1 );
       if ( util::str_compare_ci( target_if_type_str, "max" ) )
       {
         target_if_mode = TARGET_IF_MAX;
@@ -2194,40 +2223,35 @@ bool action_t::init_finished()
         background = true;
       }
     }
-    else if ( !target_if_str.empty() )
+    else if ( !option.target_if_str.empty() )
     {
       target_if_mode = TARGET_IF_FIRST;
     }
 
-    if ( !target_if_str.empty() &&
-      ( target_if_expr = expr_t::parse( this, target_if_str, sim -> optimize_expressions ) ) == 0 )
+    if ( !option.target_if_str.empty() &&
+      ( target_if_expr = expr_t::parse( this, option.target_if_str, sim -> optimize_expressions ) ) == 0 )
       ret = false;
   }
 
-  if ( ! if_expr_str.empty() &&
-       ( if_expr = expr_t::parse( this, if_expr_str, sim -> optimize_expressions ) ) == 0 )
+  if ( ! option.if_expr_str.empty() &&
+       ( if_expr = expr_t::parse( this, option.if_expr_str, sim -> optimize_expressions ) ) == 0 )
   {
     ret = false;
   }
 
-  if ( ! interrupt_if_expr_str.empty() &&
-       ( interrupt_if_expr = expr_t::parse( this, interrupt_if_expr_str, sim -> optimize_expressions ) ) == 0 )
+  if ( ! option.interrupt_if_expr_str.empty() &&
+       ( interrupt_if_expr = expr_t::parse( this, option.interrupt_if_expr_str, sim -> optimize_expressions ) ) == 0 )
   {
     ret = false;
   }
 
-  if ( ! early_chain_if_expr_str.empty() &&
-       ( early_chain_if_expr = expr_t::parse( this, early_chain_if_expr_str, sim -> optimize_expressions ) ) == 0 )
+  if ( ! option.early_chain_if_expr_str.empty() &&
+       ( early_chain_if_expr = expr_t::parse( this, option.early_chain_if_expr_str, sim -> optimize_expressions ) ) == 0 )
   {
     ret = false;
   }
 
   return ret;
-}
-
-void action_t::init_target_cache()
-{
-  sim -> target_non_sleeping_list.register_callback( aoe_target_list_callback_t( this ) );
 }
 
 // action_t::reset ==========================================================
@@ -2428,6 +2452,10 @@ expr_t* action_t::create_expression( const std::string& name_str )
       else
       {
         state -> result_amount = action.calculate_direct_amount( state );
+        if ( state -> result == RESULT_CRIT )
+        {
+          state -> result_amount = action.calculate_crit_damage_bonus( state );
+        }
         if ( amount_type == DMG_DIRECT )
           state -> target -> target_mitigation( action.get_school(), amount_type, state );
         a = state -> result_amount;
@@ -2566,7 +2594,7 @@ expr_t* action_t::create_expression( const std::string& name_str )
       {
         dot_t* dot = action.get_dot();
         if ( dot -> miss_time < timespan_t::zero() ||
-             action.sim -> current_time() >= ( dot -> miss_time + action.last_reaction_time ) )
+             action.sim -> current_time() >= ( dot -> miss_time ) )
           return true;
         else
           return false;
@@ -2773,30 +2801,12 @@ expr_t* action_t::create_expression( const std::string& name_str )
         {}
         virtual double evaluate() override
         {
-          if ( action.player -> last_foreground_action )
+          if ( prev && action.player -> last_foreground_action )
             return action.player -> last_foreground_action -> internal_id == prev -> internal_id;
           return false;
         }
       };
       return new prev_expr_t( *this, splits[1] );
-    }
-    else if ( splits[0] == "prev_gcd" )
-    {
-      struct prev_gcd_expr_t: public action_expr_t
-      {
-        action_t* previously_used;
-        prev_gcd_expr_t( action_t& a, const std::string& prev_action ): action_expr_t( "prev_gcd", a ),
-          previously_used( a.player -> find_action( prev_action ) )
-        {
-        }
-        virtual double evaluate() override
-        {
-          if ( previously_used != nullptr && action.player -> last_gcd_action )
-            return action.player -> last_gcd_action -> internal_id == previously_used -> internal_id;
-          return false;
-        }
-      };
-      return new prev_gcd_expr_t( *this, splits[1] );
     }
     else if ( splits[0] == "prev_off_gcd" )
     {
@@ -2898,7 +2908,7 @@ expr_t* action_t::create_expression( const std::string& name_str )
             }
           }
         }
-        
+
         double evaluate() override
         {
           if ( spell )
@@ -2910,7 +2920,7 @@ expr_t* action_t::create_expression( const std::string& name_str )
           }
           else if ( !second_attempt )
           { // There are cases where spell_targets may be looking for a spell that hasn't had an action created yet.
-            // This allows it to check one more time during the sims runtime, just in case the action has been created. 
+            // This allows it to check one more time during the sims runtime, just in case the action has been created.
             spell = original_spell.player -> find_action( name_of_spell );
             if ( !spell )
             {
@@ -2943,6 +2953,32 @@ expr_t* action_t::create_expression( const std::string& name_str )
     }
   }
 
+  if ( splits.size() == 3 && splits[0] == "prev_gcd" )
+  {
+    int gcd = util::to_int( splits[1] );
+    if ( gcd <= 0 )
+    {
+      sim -> errorf( "%s expression creation error: invalid parameters for expression 'prev_gcd.<number>.<action>'",
+            player -> name() );
+      return 0;
+    }
+
+    struct prevgcd_expr_t: public action_expr_t {
+      int gcd;
+      action_t* previously_used;
+      prevgcd_expr_t( action_t& a, int gcd, const std::string& prev_action ): action_expr_t( "prev_gcd", a ),
+        gcd( gcd ), // prevgcd.1.action will mean 1 gcd ago, prevgcd.2.action will mean 2 gcds ago, etc.
+        previously_used( a.player -> find_action( prev_action ) )
+      {}
+      virtual double evaluate() override
+      {
+        if ( previously_used && as<int>(action.player -> prev_gcd_actions.size()) >= gcd )
+          return ( *( action.player -> prev_gcd_actions.end() - gcd ) ) -> internal_id == previously_used -> internal_id;
+        return false;
+      }
+    };
+    return new prevgcd_expr_t( *this, gcd, splits[2] );
+  }
   if ( splits.size() == 3 && splits[ 0 ] == "dot" )
   {
     auto expr = target -> get_dot( splits[ 1 ], player ) -> create_expression( this, splits[ 2 ], true );
@@ -3041,6 +3077,15 @@ expr_t* action_t::create_expression( const std::string& name_str )
     if ( expr_target )
       return expr_target -> create_expression( this, rest );
 
+    // Ensure that we can create an expression, if not, bail out early
+    auto expr_ptr = target -> create_expression( this, rest );
+    if ( expr_ptr == nullptr )
+    {
+      return nullptr;
+    }
+    // Delete the freshly created expression that tested for expression validity
+    delete expr_ptr;
+
     // Proxy target based expression, allowing "dynamic switching" of targets
     // for the "target.<expression>" expressions. Generates a suitable
     // expression on demand for each target during run-time.
@@ -3055,12 +3100,15 @@ expr_t* action_t::create_expression( const std::string& name_str )
 
       target_proxy_expr_t( action_t& a, const std::string& expr_str ) :
         action_expr_t( "target_proxy_expr", a ), suffix_expr_str( expr_str )
-      {
-        proxy_expr.resize( a.sim -> actor_list.size() + 1, 0 );
-      }
+      { }
 
       double evaluate() override
       {
+        if ( proxy_expr.size() <= action.target -> actor_index )
+        {
+          proxy_expr.resize( action.target -> actor_index + 1, nullptr );
+        }
+
         if ( proxy_expr[ action.target -> actor_index ] == 0 )
         {
           proxy_expr[ action.target -> actor_index ] = action.target -> create_expression( &action, suffix_expr_str );
@@ -3240,7 +3288,7 @@ void action_t::do_schedule_travel( action_state_t* state, const timespan_t& time
       sim -> out_log.printf( "%s schedules travel (%.3f) for %s",
           player -> name(), time_.total_seconds(), name() );
 
-    add_travel_event( make_event<travel_event_t>( *sim, this, state, time_ ) );
+    travel_events.push_back( make_event<travel_event_t>( *sim, this, state, time_ ) );
   }
 }
 
@@ -3268,6 +3316,9 @@ void action_t::impact( action_state_t* s )
 {
   if ( !impact_targeting( s ) )
     return;
+
+  // Note, Critical damage bonus for direct amounts is computed on impact, instead of cast finish.
+  s -> result_amount = calculate_crit_damage_bonus( s );
 
   assess_damage( ( type == ACTION_HEAL || type == ACTION_ABSORB ) ? HEAL_DIRECT : DMG_DIRECT, s );
 
@@ -3323,23 +3374,31 @@ void action_t::trigger_dot( action_state_t* s )
   {
     if ( get_school() == SCHOOL_PHYSICAL && harmful )
     {
-      buff_t* b = s -> target -> debuffs.bleeding;
-      if ( b -> current_value > 0 )
+      if ( buff_t* b = s -> target -> debuffs.bleeding )
       {
-        b -> current_value += 1.0;
+        if ( b -> current_value > 0 )
+        {
+          b -> current_value += 1.0;
+        }
+        else
+        {
+          b -> start( 1, 1.0 );
+        }
       }
-      else b -> start( 1, 1.0 );
     }
   }
 
   dot -> trigger( duration );
 }
 
+/**
+ * Determine if a travel event for given target currently exists.
+ */
 bool action_t::has_travel_events_for( const player_t* target ) const
 {
-  for ( size_t i = 0; i < travel_events.size(); ++i )
+  for ( const auto& travel_event : travel_events )
   {
-    if ( travel_events[ i ] -> state -> target == target )
+    if ( travel_event -> state -> target == target )
       return true;
   }
 
@@ -3358,24 +3417,30 @@ void action_t::do_teleport( action_state_t* state )
   player -> teleport( composite_teleport_distance( state ) );
 }
 
-/* Calculates the new dot length after a refresh
+/**
+ * Calculates the new dot length after a refresh
  * Necessary because we have both pandemic behaviour ( last 30% of the dot are preserved )
  * and old Cata/MoP behavior ( only time to the next tick is preserved )
  */
 timespan_t action_t::calculate_dot_refresh_duration( const dot_t* dot, timespan_t triggered_duration ) const
 {
   if ( ! channeled )
+  {
     // WoD Pandemic
-    return std::min( triggered_duration * 0.3, dot -> remains() ) + triggered_duration; // New WoD Formula: Get no malus during the last 30% of the dot.
+    // New WoD Formula: Get no malus during the last 30% of the dot.
+    return std::min( triggered_duration * 0.3, dot -> remains() ) + triggered_duration;
+  }
   else
+  {
     return dot -> time_to_next_tick() + triggered_duration;
+  }
 }
 
 bool action_t::dot_refreshable( const dot_t* dot, const timespan_t& triggered_duration ) const
 {
   if ( ! channeled )
   {
-    return dot -> remains() <= triggered_duration * .3;
+    return dot -> remains() <= triggered_duration * 0.3;
   }
   else
   {
@@ -3409,6 +3474,26 @@ call_action_list_t::call_action_list_t( player_t* player, const std::string& opt
   {
     sim -> errorf( "Player %s uses call_action_list with unknown action list %s\n", player -> name(), alist_name.c_str() );
     sim -> cancel();
+  }
+
+}
+
+void call_action_list_t::init()
+{
+  action_t::init();
+
+  if ( action_list && alist )
+  {
+    auto action_it = range::find( action_list -> foreground_action_list, this );
+    auto action_idx = std::distance( action_list -> foreground_action_list.begin(), action_it );
+    auto it = range::find_if( alist -> parents, [ this ]( const action_priority_list_t::parent_t& parent ) {
+      return std::get<0>( parent ) == action_list;
+    } );
+
+    if ( it == alist -> parents.end() )
+    {
+      alist -> parents.push_back( std::make_tuple( action_list, action_idx ) );
+    }
   }
 }
 
@@ -3453,14 +3538,14 @@ bool action_t::consume_cost_per_tick( const dot_t& /* dot */ )
                                name(), player -> resources.current[ r ] );
     }
 
-    resource_consumed = player -> resource_loss( r, cost, nullptr, this );
-    stats -> consume_resource( r, resource_consumed );
+    last_resource_cost = player -> resource_loss( r, cost, nullptr, this );
+    stats -> consume_resource( r, last_resource_cost );
 
     if ( sim -> log )
       sim -> out_log.printf( "%s: %s consumes ticking cost %.1f (%.1f) %s for %s (%.0f).",
                              player -> name(),
                              name(),
-                             cost, resource_consumed, util::resource_type_string( r ),
+                             cost, last_resource_cost, util::resource_type_string( r ),
                              name(), player -> resources.current[ r ] );
 
     if ( ! enough_resource_available )
@@ -3503,10 +3588,14 @@ dot_t* action_t::find_dot( player_t* t ) const
 void action_t::add_child( action_t* child )
 {
   child -> parent_dot = target -> get_dot( name_str, player );
+  child_action.push_back( child );
   if ( child -> parent_dot && range > 0 && child -> radius > 0 && child -> is_aoe() )
-   // If the parent spell has a range, the tick_action has a radius and is an aoe spell, then the tick action likely also has a range.
-   // This will allow distance_target_t to correctly determine spells that radiate from the target, instead of the player.
-     child -> range = range;
+  {
+    // If the parent spell has a range, the tick_action has a radius and is an aoe spell, then the tick action likely
+    // also has a range. This will allow distance_target_t to correctly determine spells that radiate from the target,
+    // instead of the player.
+    child->range = range;
+  }
   stats -> add_child( child -> stats );
 }
 
@@ -3566,4 +3655,56 @@ void action_t::reschedule_queue_event()
     event_t::cancel( queue_event );
     queue_event = make_event<queued_action_execute_event_t>( *sim, this, new_queue_delay, off_gcd );
   }
+}
+
+/**
+ * Acquire a new target, where the context is the actor that sources the retarget event, and the actor-level candidate
+ * is given as a parameter (selected by player_t::acquire_target). Default target acquirement simply assigns the
+ * actor-selected candidate target to the current target. Event contains the retarget event type, context contains the
+ * (optional) actor that triggered the event.
+ */
+void action_t::acquire_target( retarget_event_e /* event */,
+                               player_t*        /* context */,
+                               player_t*        candidate_target )
+{
+  // Don't change targets if they are not of the same generic type (both enemies, or both friendlies)
+  if ( target && target -> is_enemy() != candidate_target -> is_enemy() )
+  {
+    return;
+  }
+
+  // If the user has indicated a target number for the action, don't adjust targets
+  if ( option.target_number > 0 )
+  {
+    return;
+  }
+
+  if ( target != candidate_target )
+  {
+    if ( sim -> debug )
+    {
+      sim -> out_debug.printf( "%s %s target change, current=%s candidate=%s", player -> name(),
+        name(), target ? target -> name() : "(none)", candidate_target -> name() );
+    }
+    target = candidate_target;
+    target_cache.is_valid = false;
+  }
+}
+
+void action_t::activate()
+{
+  sim -> target_non_sleeping_list.register_callback( [ this ]( player_t* ) {
+    target_cache.is_valid = false;
+  } );
+}
+
+// Change the target of the action, may require invalidation of target cache
+void action_t::set_target( player_t* new_target )
+{
+  if ( n_targets() != 0 && target != new_target )
+  {
+    target_cache.is_valid = false;
+  }
+
+  target = new_target;
 }

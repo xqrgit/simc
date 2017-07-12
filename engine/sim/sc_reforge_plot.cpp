@@ -31,7 +31,7 @@ bool is_plot_stat( sim_t* sim, stat_e stat )
   // also check if any player scales_with that stat
   auto it =
       range::find_if( sim->player_no_pet_list, [stat]( const player_t* p ) {
-        return !p->quiet && p->scales_with[ stat ];
+        return !p->quiet && p->scaling->scales_with[ stat ];
       } );
 
   return it != sim->player_no_pet_list.end();
@@ -53,7 +53,7 @@ reforge_plot_t::reforge_plot_t( sim_t* s )
     reforge_plot_iterations( -1 ),
     reforge_plot_target_error( 0 ),
     reforge_plot_debug( 0 ),
-    current_stat_combo( 0 ),
+    current_stat_combo( -1 ),
     num_stat_combos( 0 )
 {
   create_options();
@@ -80,7 +80,7 @@ void reforge_plot_t::generate_stat_mods(
       player_t* p = sim->player_no_pet_list[ i ];
       if ( p->quiet )
         continue;
-      if ( p->current.stats.get_stat( stat_indices[ cur_mod_stat ] ) - sum < 0 )
+      if ( p->initial.stats.get_stat( stat_indices[ cur_mod_stat ] ) - sum < 0 )
         return;
     }
 
@@ -98,7 +98,7 @@ void reforge_plot_t::generate_stat_mods(
       player_t* p = sim->player_no_pet_list[ i ];
       if ( p->quiet )
         continue;
-      if ( p->current.stats.get_stat( stat_indices[ cur_mod_stat ] ) +
+      if ( p->initial.stats.get_stat( stat_indices[ cur_mod_stat ] ) +
                mod_amount <
            0 )
       {
@@ -175,33 +175,26 @@ void reforge_plot_t::analyze_stats()
       current_reforge_sim->work_queue->init( reforge_plot_iterations );
     }
 
-    std::string& tmp = current_reforge_sim->sim_phase_str;
+    std::stringstream s;
     for ( size_t j = 0; j < stat_mods[ i ].size(); j++ )
     {
       stat_e stat = reforge_plot_stat_indices[ j ];
       int mod     = stat_mods[ i ][ j ];
-      current_reforge_sim->enchant.add_stat( stat, mod );
+
+      current_reforge_sim -> enchant.add_stat( stat, mod );
       delta_result[ j ].value = mod;
       delta_result[ j ].error = 0;
 
-      if ( sim->report_progress )
+      s << util::to_string( mod ) << " " << util::stat_type_abbrev( stat );
+      if ( j < stat_mods[ i ].size() - 1 )
       {
-        tmp += util::to_string( mod ) + " " + util::stat_type_abbrev( stat );
-
-        if ( j < stat_mods[ i ].size() - 1 )
-          tmp += ",";
+        s << ", ";
       }
     }
 
-    if ( sim->report_progress )
-    {
-      tmp += ":";
-      if ( tmp.length() < 23 )
-        tmp.append( 23 - tmp.length(), ' ' );
-    }
-
     current_stat_combo = as<int>( i );
-    current_reforge_sim->execute();
+    current_reforge_sim -> progress_bar.set_base( s.str() );
+    current_reforge_sim -> execute();
 
     for ( player_t* player : sim->players_by_name )
     {

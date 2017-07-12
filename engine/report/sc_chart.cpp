@@ -81,7 +81,9 @@ void add_color_data( sc_js_t& data,
 {
   for ( auto p : player_list )
   {
-    data.set( "__colors." + p->name_str, color::class_color( p->type ).str() );
+    std::string sanitized_name = p -> name_str;
+    util::replace_all( sanitized_name, ".", "_" );
+    data.set( "__colors.C_" + sanitized_name, color::class_color( p->type ).str() );
   }
 }
 
@@ -125,8 +127,9 @@ double apm_player_mean( const player_t* p )
 
 double variance( const player_t* p )
 {
-  return ( p->collected_data.dps.std_dev / p->collected_data.dps.pretty_mean() *
-           100 );
+  return p->collected_data.dps.mean() > 0
+    ? ( p->collected_data.dps.std_dev / p->collected_data.dps.pretty_mean() * 100 )
+    : 0;
 }
 
 double compute_player_burst_max( const sc_timeline_t& container )
@@ -190,9 +193,13 @@ metric_e populate_player_list( const std::string& type, const sim_t& sim,
   }
   else if ( util::str_compare_ci( type, "variance" ) )
   {
-    name        = "DPS Variance Percentage";
-    source_list = &sim.players_by_variance;
-    m           = METRIC_VARIANCE;
+    // Variance implies there is DPS output in the simulator
+    if ( sim.raid_dps.mean() > 0 )
+    {
+      name        = "DPS Variance Percentage";
+      source_list = &sim.players_by_variance;
+      m           = METRIC_VARIANCE;
+    }
   }
 
   if ( source_list != nullptr )
@@ -204,69 +211,12 @@ metric_e populate_player_list( const std::string& type, const sim_t& sim,
   return pl.size() > 1 ? m : METRIC_NONE;
 }
 
-double compute_median( const std::vector<const player_t*>& pl, metric_e metric,
-                       metric_value_e val )
-{
-  if ( pl.size() < 2 )
-  {
-    return 0;
-  }
-
-  if ( !pl[ 0 ]->sim->output_relative_difference )
-  {
-    return 0;
-  }
-
-  size_t m = pl.size() / 2;
-
-  const extended_sample_data_t *d1 = nullptr, *d2 = nullptr;
-  double median = 0;
-
-  switch ( metric )
-  {
-    case METRIC_DPS:
-      d1 = &pl[ m ]->collected_data.dps;
-      d2 = pl.size() % 2 ? d1 : &pl[ m - 1 ]->collected_data.dps;
-      break;
-    case METRIC_PDPS:
-      d1 = &pl[ m ]->collected_data.prioritydps;
-      d2 = pl.size() % 2 ? d1 : &pl[ m - 1 ]->collected_data.prioritydps;
-      break;
-    case METRIC_HPS:
-      d1 = &pl[ m ]->collected_data.hps;
-      d2 = pl.size() % 2 ? d1 : &pl[ m - 1 ]->collected_data.hps;
-      break;
-    case METRIC_DTPS:
-      d1 = &pl[ m ]->collected_data.dtps;
-      d2 = pl.size() % 2 ? d1 : &pl[ m - 1 ]->collected_data.dtps;
-      break;
-    case METRIC_TMI:
-      d1 = &pl[ m ]->collected_data.theck_meloree_index;
-      d2 =
-          pl.size() % 2 ? d1 : &pl[ m - 1 ]->collected_data.theck_meloree_index;
-      break;
-    default:
-      return 0;
-  }
-
-  switch ( val )
-  {
-    case VALUE_MEAN:
-      median = ( d1->mean() + d2->mean() ) / 2.0;
-      break;
-    default:
-      break;
-  }
-
-  return median;
-}
-
 std::vector<double> get_data_summary( const player_collected_data_t& container,
                                       metric_e metric,
                                       double percentile = 0.25 )
 {
   const extended_sample_data_t* c = nullptr;
-  std::vector<double> data( 5, 0 );
+  std::vector<double> data( 6, 0 );
   switch ( metric )
   {
     case METRIC_DPS:
@@ -296,6 +246,7 @@ std::vector<double> get_data_summary( const player_collected_data_t& container,
   data[ 2 ] = c->mean();
   data[ 3 ] = c->percentile( 1 - percentile );
   data[ 4 ] = c->max();
+  data[ 5 ] = c->percentile( .5 );
 
   return data;
 }
@@ -340,8 +291,16 @@ double get_data_value( const player_collected_data_t& container,
     case METRIC_VARIANCE:
     {
       if ( val != VALUE_MEAN )
+      {
         return 0;
-      return ( container.dps.std_dev / container.dps.pretty_mean() * 100 );
+      }
+
+      if ( container.dps.mean() > 0 )
+      {
+        return ( container.dps.std_dev / container.dps.pretty_mean() * 100 );
+      }
+
+      return 0;
     }
     default:
       return 0;
@@ -672,8 +631,8 @@ bool chart::generate_reforge_plot( highchart::chart_t& ac, const player_t& p )
     double v = util::round( pdata[ 2 ].value, p.sim->report_precision );
     double e = util::round( pdata[ 2 ].error / 2, p.sim->report_precision );
 
-    mean.emplace_back( x, v );
-    range.emplace_back( x, v + e, v - e );
+    mean.push_back( std::make_pair(x, v ) );
+    range.push_back( highchart::data_triple_t(x, v + e, v - e ) );
   }
 
   ac.add_simple_series( "line", from_color, "Mean", mean );
@@ -1051,9 +1010,7 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
     // Sort list of actors in the chart based on the value metric (and metric)
     std::sort( player_list.begin(), player_list.end(),
                player_list_comparator_t( chart_metric, vm ) );
-
-    // Compute median if applicable
-    double median = compute_median( player_list, chart_metric, vm );
+    double lowest_value = get_data_value( player_list.back() -> collected_data, chart_metric, vm );
 
     bool candlebars = false;
     // Iterate over the players and output data
@@ -1071,20 +1028,16 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
 
       sc_js_t e;
       e.set( "color", c.str() );
-      e.set( "name",
-             p->name_str +
-                 ( s.ilevel_raid_report
-                       ? ( "_" + util::to_string( p->avg_item_level(), 1 ) )
-                       : "" ) );
+      e.set( "name", p->name_str );
       e.set( "y",
              util::round( value, static_cast<unsigned int>( precision ) ) );
       e.set( "id", "#player" + util::to_string( p->index ) + "toggle" );
 
-      // If median is defined, add relative difference (in percent) to the data
-      if ( median > 0 )
+      // If lowest_value is defined, add relative difference (in percent) to the data
+      if ( lowest_value > 0 )
       {
         has_diff = true;
-        e.set( "reldiff", 100.0 * value / median - 100.0 );
+        e.set( "reldiff", 100.0 * value / lowest_value - 100.0 );
       }
 
       bc.add( "__data." + series_id_str + ".series.0.data", e );
@@ -1092,19 +1045,16 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
       if ( vm == VALUE_MEAN )
       {
         std::vector<double> boxplot_data = get_data_summary(
-            p->collected_data, chart_metric, s.boxplot_percentile );
+            p->collected_data, chart_metric, s.chart_boxplot_percentile );
         if ( boxplot_data[ 2 ] != 0 && boxplot_data[ 0 ] != boxplot_data[ 2 ] )
         {
           candlebars = true;
           sc_js_t v;
-          v.set( "name",
-                 p->name_str +
-                     ( s.ilevel_raid_report
-                           ? ( "_" + util::to_string( p->avg_item_level(), 1 ) )
-                           : "" ) );
+          v.set( "name", p->name_str );
           v.set( "low", boxplot_data[ 0 ] );
           v.set( "q1", boxplot_data[ 1 ] );
-          v.set( "median", boxplot_data[ 2 ] );
+          v.set( "median", boxplot_data[ 5 ] );
+          v.set( "mean", boxplot_data[ 2 ] );
           v.set( "q3", boxplot_data[ 3 ] );
           v.set( "high", boxplot_data[ 4 ] );
           v.set( "color", c.dark( .4 ).str() );
@@ -1160,7 +1110,7 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
     n_chars++;
   }
 
-  if ( s.output_relative_difference && has_diff )
+  if ( s.chart_show_relative_difference && has_diff )
   {
     n_chars += 5;
   }
@@ -1196,6 +1146,14 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
   bc.set( "plotOptions.boxplot.whiskerWidth", 1 );
   bc.set( "plotOptions.boxplot.medianWidth", 1 );
   bc.set( "plotOptions.boxplot.pointWidth", 18 );
+  bc.set( "plotOptions.boxplot.tooltip.pointFormat",
+    "Maximum: {point.high}<br/>"
+    "Upper quartile: {point.q3}<br/>"
+    "Mean: {point.mean:,.1f}<br/>"
+    "Median: {point.median}<br/>"
+    "Lower quartile: {point.q1}<br/>"
+    "Minimum: {point.low}<br/>"
+  );
 
   // X-axis label formatter, fetches colors from a (chart-local) table, instead
   // of writing out span
@@ -1208,7 +1166,7 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
       "'\xe2\x80\xa6';";
   xaxis_label += "}";
   xaxis_label +=
-      "return '<span style=\"color:' + this.chart.options.__colors[this.value] "
+      "return '<span style=\"color:' + this.chart.options.__colors['C_' + this.value.replace('.', '_')] "
       "+ ';\">' + formatted_name + '</span>';";
   xaxis_label += " }";
 
@@ -1257,11 +1215,11 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
   // If relative difference is used, print out a absolutevalue (relative
   // difference%) label
   std::string formatter = "function() {";
-  if ( s.output_relative_difference )
+  if ( s.chart_show_relative_difference )
   {
     formatter +=
         "var fmt = '<span style=\"color:' + "
-        "this.series.chart.options.__colors[this.point.name] + ';\">';";
+        "this.series.chart.options.__colors['C_' + this.point.name.replace('.', '_')] + ';\">';";
     formatter +=
         "if (this.point.reldiff === undefined || this.point.reldiff === 0) { "
         "fmt += Highcharts.numberFormat(this.point.y, " +
@@ -1281,7 +1239,7 @@ bool chart::generate_raid_aps( highchart::bar_chart_t& bc, const sim_t& s,
   {
     formatter +=
         "return '<span style=\"color:' + "
-        "this.series.chart.options.__colors[this.point.name] + ';\">' + "
+        "this.series.chart.options.__colors['C_' + this.point.name.replace('.', '_')] + ';\">' + "
         "Highcharts.numberFormat(this.y, " +
         util::to_string( precision ) + ") + '</span>';";
     formatter += " }";
@@ -1328,8 +1286,12 @@ bool chart::generate_raid_dpet( highchart::bar_chart_t& bc, const sim_t& s )
     stats_list.erase( stats_list.begin() + 30, stats_list.end() );
   }
 
-  if ( stats_list.size() > 0 &&
-       ( stats_list.front()->apet / stats_list.back()->apet >= 100 ) )
+  auto log = stats_list.size() > 0 &&
+             stats_list.back() -> apet > 0
+             ? stats_list.front()->apet / stats_list.back()->apet >= 100
+             : false;
+
+  if ( log )
   {
     bc.set( "yAxis.type", "logarithmic" );
     bc.set_yaxis_title( "Damage per Execute Time (log)" );
@@ -1413,7 +1375,11 @@ bool chart::generate_action_dpet( highchart::bar_chart_t& bc,
   if ( stats_list.empty() )
     return false;
 
-  if ( stats_list.front()->apet / stats_list.back()->apet >= 100 )
+  auto log = stats_list.back() -> apet > 0
+             ? stats_list.front()->apet / stats_list.back()->apet >= 100
+             : false;
+
+  if ( log )
   {
     bc.set( "yAxis.type", "logarithmic" );
     bc.set_yaxis_title( "Damage per Execute Time (log)" );
@@ -1506,10 +1472,15 @@ bool chart::generate_scaling_plot( highchart::chart_t& ac, const player_t& p,
 bool chart::generate_scale_factors( highchart::bar_chart_t& bc,
                                     const player_t& p, scale_metric_e metric )
 {
+  if ( p.scaling == nullptr )
+  {
+    return false;
+  }
+
   std::vector<stat_e> scaling_stats;
-  range::copy_if( p.scaling_stats[ metric ],
+  range::copy_if( p.scaling->scaling_stats[ metric ],
                   std::back_inserter( scaling_stats ),
-                  [&]( const stat_e& stat ) { return p.scales_with[ stat ]; } );
+                  [&]( const stat_e& stat ) { return p.scaling->scales_with[ stat ]; } );
 
   if ( scaling_stats.empty() )
   {
@@ -1539,13 +1510,13 @@ bool chart::generate_scale_factors( highchart::bar_chart_t& bc,
   std::vector<std::pair<double, double> > error;
   for ( auto stat : scaling_stats )
   {
-    double value = util::round( p.scaling[ metric ].get_stat( stat ),
+    double value = util::round( p.scaling->scaling[ metric ].get_stat( stat ),
                                 p.sim->report_precision );
     double error_value = util::round(
-        p.scaling_error[ metric ].get_stat( stat ), p.sim->report_precision );
+        p.scaling->scaling_error[ metric ].get_stat( stat ), p.sim->report_precision );
     data.push_back( value );
-    error.emplace_back( value - fabs( error_value ),
-                        value + fabs( error_value ) );
+    error.push_back( std::make_pair( value - fabs( error_value ),
+                        value + fabs( error_value ) ) );
 
     std::string category_str = util::stat_type_abbrev( stat );
     category_str +=
@@ -1570,8 +1541,13 @@ bool chart::generate_scale_factors( highchart::bar_chart_t& bc,
 highchart::time_series_t& chart::generate_stats_timeline(
     highchart::time_series_t& ts, const stats_t& s )
 {
+  if ( s.timeline_amount == nullptr )
+  {
+    return ts;
+  }
+
   sc_timeline_t timeline_aps;
-  s.timeline_amount.build_derivative_timeline( timeline_aps );
+  s.timeline_amount -> build_derivative_timeline( timeline_aps );
   std::string stats_type = util::stats_type_string( s.type );
   ts.set_toggle_id( "actor" + util::to_string( s.player->index ) + "_" +
                     s.name_str + "_" + stats_type + "_toggle" );

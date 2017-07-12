@@ -1,22 +1,161 @@
-import os, io, struct, sys, logging, math, re
+import os, io, struct, sys, logging, math, re, binascii
 
 import dbc.fmt
 
-_BASE_HEADER = struct.Struct('IIII')
-_DB_HEADER_1 = struct.Struct('III')
-_DB_HEADER_2 = struct.Struct('IIIHH')
-_WCH5_HEADER = struct.Struct('IIIIIII')
-_ID          = struct.Struct('I')
-_CLONE       = struct.Struct('II')
-_ITEMRECORD  = struct.Struct('IH')
-_WCH_ITEMRECORD = struct.Struct('IIH')
-_WCH7_BASE_HEADER = struct.Struct('IIIII')
+_BASE_HEADER = struct.Struct('<IIII')
+_DB_HEADER_1 = struct.Struct('<III')
+_DB_HEADER_2 = struct.Struct('<IIIHH')
+_DB_HEADER_3 = struct.Struct('<II')
+_WCH5_HEADER = struct.Struct('<IIIIIII')
+_ID          = struct.Struct('<I')
+_CLONE       = struct.Struct('<II')
+_ITEMRECORD  = struct.Struct('<IH')
+_WCH_ITEMRECORD = struct.Struct('<IIH')
+_WCH7_BASE_HEADER = struct.Struct('<IIIII')
+
+_WDB6_BLOCK_HEADER = struct.Struct('<IB')
 
 # WDB5 field data, size (32 - size) // 8, offset tuples
-_FIELD_DATA  = struct.Struct('HH')
+_FIELD_DATA = struct.Struct('<HH')
+
+_BYTE = struct.Struct('B')
+_SHORT = struct.Struct('<H')
+_INT32 = struct.Struct('<I')
 
 X_ID_BLOCK = 0x04
 X_OFFSET_MAP = 0x01
+
+def _do_parse(unpackers, data, record_offset, record_size):
+    full_data = []
+    field_offset = 0
+    for i24, unpacker in unpackers:
+        full_data += unpacker.unpack_from(data, record_offset + field_offset)
+        field_offset += unpacker.size
+        if i24:
+            field_offset -= 1
+            full_data[-1] &= 0xFFFFFF
+    return full_data
+
+class DBCacheParser:
+    __expanded_parsers__ = [ 'SpellEffect' ]
+
+    def is_magic(self): return self.magic == b'XFTH'
+
+    def __init__(self, options):
+        self.options = options
+        self.file_name_ = None
+
+        self.parse_offset = 0
+        self.entries = {}
+        self.parsers = {}
+
+        # See that file exists already
+        normalized_path = os.path.abspath(os.path.join(options.cache_dir, 'DBCache.bin'))
+        if os.access(normalized_path, os.R_OK):
+            self.file_name_ = normalized_path
+            logging.debug('DBCache.bin file found at %s', self.file_name_)
+
+    def get_string(self, offset):
+        if offset == 0:
+            return None
+
+        end_offset = self.data.find(b'\x00', offset)
+
+        if end_offset == -1:
+            return None
+
+        return self.data[offset:end_offset].decode('utf-8')
+
+    # Returns dbc_id (always 0 for base), record offset into file
+    def get_record_info(self, wdb_parser, record_id):
+        sig = wdb_parser.table_hash
+
+        if sig not in self.entries:
+            return -1, 0
+
+        if record_id >= len(self.entries[sig]):
+            return -1, 0
+
+        dbc_id = wdb_parser.has_id_block() and self.entries[sig][record_id]['record_id'] or -1
+        return dbc_id, self.entries[sig][record_id]['offset'], \
+                self.entries[sig][record_id]['length']
+
+    def get_record(self, wdb_parser, offset, size):
+        sig = wdb_parser.table_hash
+
+        if sig not in self.entries:
+            return None
+
+        if sig not in self.parsers:
+            if wdb_parser.class_name() in DBCacheParser.__expanded_parsers__:
+                self.parsers[sig] = wdb_parser.create_expanded_parser(True)
+            else:
+                self.parsers[sig] = wdb_parser.create_formatted_parser(True)
+
+        return self.parsers[sig](self.data, offset, size)
+
+    def n_entries(self, wdb_parser):
+        sig = wdb_parser.table_hash
+
+        if sig not in self.entries:
+            return 0
+
+        return len(self.entries[sig])
+
+    def open(self):
+        if not self.file_name_:
+            return True
+
+        f = io.open(self.file_name_, mode = 'rb')
+        self.data = f.read()
+        f.close()
+
+        if not self.parse_header():
+            return False
+
+        entry_unpacker = struct.Struct('<4sIiIIII')
+
+        n_entries = 0
+        while self.parse_offset < len(self.data):
+            magic, unk_1, unk_2, length, sig, record_id, unk_3 = entry_unpacker.unpack_from(self.data, self.parse_offset)
+            self.parse_offset += entry_unpacker.size
+            if length == 0:
+                continue
+
+            entry = {
+                'record_id': record_id,
+                'unk_1': unk_1,
+                'unk_2': unk_2,
+                'unk_3': unk_3,
+                'length': length,
+                'offset': self.parse_offset
+            }
+
+            if sig not in self.entries:
+                self.entries[sig] = []
+
+            self.entries[sig].append(entry)
+
+            # Skip data
+            self.parse_offset += length
+            n_entries += 1
+
+        logging.debug('Parsed %d hotfix entries', n_entries)
+
+        return True
+
+    def parse_header(self):
+        header_unpack = struct.Struct('4sii')
+
+        self.magic, self.unk_1, self.build = header_unpack.unpack_from(self.data)
+
+        if not self.is_magic():
+            logging.error('DBCache.bin: Invalid data file format %s', self.magic.decode('utf-8'))
+            return False
+
+        self.parse_offset += header_unpack.size
+
+        return True
 
 class DBCParserBase:
     def is_magic(self):
@@ -25,9 +164,6 @@ class DBCParserBase:
     def __init__(self, options, fname):
         self.file_name_ = None
         self.options = options
-
-        # Data format storage
-        self.fmt = dbc.fmt.DBFormat(options)
 
         # Data stuff
         self.data = None
@@ -42,9 +178,6 @@ class DBCParserBase:
         # Searching
         self.id_data = None
 
-        # Parsing
-        self.unpackers = []
-
         self.id_format_str = None
 
         # See that file exists already
@@ -57,6 +190,14 @@ class DBCParserBase:
         if not self.file_name_:
             logging.error('No WDB file found based on "%s"', fname)
             sys.exit(1)
+
+        # Data format storage
+        self.fmt = dbc.fmt.DBFormat(options)
+        # Static data fields
+        try:
+            self.data_format = self.fmt.objs(self.class_name())
+        except Exception as e:
+            self.data_format = None
 
     def is_wch(self):
         return False
@@ -75,62 +216,232 @@ class DBCParserBase:
         self.id_format_str = '%%%uu' % n_digits
         return self.id_format_str
 
-    # Sanitize data, blizzard started using dynamic width ints in WDB5, so
-    # 3-byte ints have to be expanded to 4 bytes to parse them properly (with
-    # struct module)
+    def use_inline_strings(self):
+        return False
+
     def build_parser(self):
-        format_str = '<'
+        if self.options.raw:
+            self.record_parser = self.create_raw_parser()
+        else:
+            self.record_parser = self.create_formatted_parser(self.use_inline_strings())
 
-        data_fmt = field_names = None
-        if not self.options.raw:
-            data_fmt = self.fmt.types(self.class_name())
-            field_names = self.fmt.fields(self.class_name())
+        if self.record_parser == None:
+            return False
+
+        return True
+
+    # Build a raw parser out of field data
+    def create_raw_parser(self):
         field_idx = 0
+        format_str = '<'
+        unpackers = []
 
-        field_offset = 0
         for field_data_idx in range(0, len(self.field_data)):
-            field_data = self.field_data[field_data_idx]
-            type_idx = min(field_idx, data_fmt and len(data_fmt) - 1 or field_idx)
-            field_size = field_data[1]
-            for sub_idx in range(0, field_data[2]):
+            field_size = self.field_data[field_data_idx][1]
+            field_count = self.field_data[field_data_idx][2]
+
+            for sub_idx in range(0, field_count):
                 if field_size == 1:
-                    format_str += data_fmt and data_fmt[type_idx] or 'b'
+                    format_str += 'b'
                 elif field_size == 2:
-                    format_str += data_fmt and data_fmt[type_idx] or 'h'
+                    format_str += 'h'
                 elif field_size >= 3:
-                    format_str += data_fmt and data_fmt[type_idx].replace('S', 'I') or 'i'
+                    format_str += 'i'
                 field_idx += 1
 
                 if field_size == 3:
-                    if not self.options.raw:
-                        logging.debug('Unpacker has a 3-byte field (name=%s pos=%d): terminating (%s) and beginning a new unpacker',
-                            field_names[type_idx], field_idx, format_str)
-                    else:
-                        logging.debug('Unpacker has a 3-byte field (pos=%d): terminating (%s) and beginning a new unpacker',
-                            field_idx, format_str)
+                    logging.debug('Unpacker has a 3-byte field (pos=%d): terminating (%s) and beginning a new unpacker',
+                        field_idx, format_str)
                     unpacker = struct.Struct(format_str)
-                    self.unpackers.append((0xFFFFFF, unpacker, field_offset))
-                    field_offset += unpacker.size - 1
+                    unpackers.append((True, unpacker))
                     format_str = '<'
 
         if len(format_str) > 1:
-            self.unpackers.append((self.field_data[-1][1] == 3 and 0xFFFFFF or 0xFFFFFFFF, struct.Struct(format_str), field_offset))
+            unpackers.append((self.field_data[-1][1] == 3, struct.Struct(format_str)))
 
         logging.debug('Unpacking plan for %s: %s',
             self.full_name(),
-            ', '.join(['%s (len=%d, offset=%d)' % (u.format.decode('utf-8'), u.size, o) for _, u, o in self.unpackers]))
-        if len(self.unpackers) == 1:
-            self.record_parser = lambda ro, rs: self.unpackers[0][1].unpack_from(self.data, ro)
-        else:
-            self.record_parser = self.__do_parse
+            ', '.join(['%s (len=%d, i24=%s)' % (u.format.decode('utf-8'), u.size, i24) for i24, u in unpackers]))
 
-    def __do_parse(self, record_offset, record_size):
-        full_data = []
-        for mask, unpacker, offset in self.unpackers:
-            full_data += unpacker.unpack_from(self.data, record_offset + offset)
-            # TODO: Unsigned vs Signed
-            full_data[-1] &= mask
-        return full_data
+        if len(unpackers) == 1:
+            return lambda data, ro, rs: unpackers[0][1].unpack_from(data, ro)
+        else:
+            return lambda data, ro, rs: _do_parse(unpackers, data, ro, rs)
+
+    # Validate the json-based data format against the DB2-included data format
+    # for field information.
+    def validate_format(self):
+        if not self.data_format:
+            logging.error('No data format found for %s', self.class_name())
+            return False
+
+        if len(self.data_format) != len(self.field_data):
+            logging.error('%s: Data format mismatch, record has %u fields, format file %u',
+                self.full_name(), len(self.field_data), len(self.data_format))
+            return False
+
+        # Ensure fields from our json formats and internal field data stay consistent
+        for field_data_idx in range(0, len(self.field_data)):
+            field_data = self.field_data[field_data_idx]
+            field_format = self.data_format[field_data_idx]
+
+            field_size = field_data[1]
+            field_count = field_data[2]
+
+            if (field_data_idx < len(self.field_data) - 1 and field_count != field_format.elements) or \
+                    field_count < field_format.elements:
+                logging.error('%s: Internal field count mismatch for field %u (%s), record=%u, format=%u',
+                    self.full_name(), field_data_idx + 1, field_format.base_name(), field_count, field_format.elements)
+                return False
+
+            if field_size not in field_format.field_size():
+                logging.error('%s: Internal field size mismatch for field %u (%s), record=%u, format=%s (%s)',
+                    self.full_name(), field_data_idx + 1, field_format.base_name(), field_size,
+                    ', '.join([str(x) for x in field_format.field_size()]),
+                    field_format.data_type)
+                return False
+
+
+        return True
+
+    # Some DB2 record structure alters, and changes into an "expanded mode"
+    # when the data is inserted into the cache. Expanded mode data has all
+    # fields as 4bytes, instead of a dynamic field width (for integers).
+    #
+    # Note, field validation is ignored here, as it is presumed that if the
+    # real DB2 field validation succeeds (create_formatted_parser), the cache
+    # field structure is going to be coherent automatically.
+    def create_expanded_parser(self, inline_strings):
+        field_idx = 0
+        format_str = '<'
+        unpackers = []
+
+        for field_format in self.fmt.objs(self.class_name(), True):
+            # Ensure fields from our json formats and internal field data stay consistent
+            field_count = field_format.elements
+
+            for sub_idx in range(0, field_count):
+                # String format fields get converted to something Struct module
+                # understands. Depending on the DB2 file type, customized
+                # string parsing may be neeedd
+                if field_format.data_type == 'S':
+                    # No offset map, translate 'S' directly to a 4-byte unsigned integer
+                    if not inline_strings:
+                        format_str += 'I'
+                    # Offset map, create an inline string parser (StringUnpacker)
+                    else:
+                        logging.debug('Inline string field (name=%s, pos=%d [%d]), end previous parser',
+                            field_format.base_name(), field_idx, field_data_idx)
+
+                        if len(format_str) > 1:
+                            unpackers.append((False, struct.Struct(format_str)))
+                            format_str = '<'
+                        unpackers.append((False, StringUnpacker(field_size)))
+                # Normal (unsigned) byte/short/int/float field, apply to Struct
+                # parser as an unsigned or signed integer (4bytes), or directly
+                # as float.
+                else:
+                    if field_format.data_type in ['h', 'b']:
+                        format_str += 'i'
+                    elif field_format.data_type in ['H', 'B']:
+                        format_str += 'I'
+                    else:
+                        format_str += field_format.data_type
+
+                field_idx += 1
+
+        if len(format_str) > 1:
+            unpackers.append((False, struct.Struct(format_str)))
+
+        logging.debug('Unpacking plan for %s: %s',
+            self.full_name(),
+            ', '.join(['%s (len=%d, i24=%s)' % (u.format.decode('utf-8'), u.size, i24) for i24, u in unpackers]))
+
+        # One parser unpackers don't need to go through a function, can just do
+        # the parsing in one go through a lambda function. Multi-parsers require state to be kept.
+        if len(unpackers) == 1:
+            return lambda data, ro, rs: unpackers[0][1].unpack_from(data, ro)
+        else:
+            return lambda data, ro, rs: _do_parse(unpackers, data, ro, rs)
+
+
+    # Sanitize data, blizzard started using dynamic width ints in WDB5, so
+    # 3-byte ints have to be expanded to 4 bytes to parse them properly (with
+    # struct module)
+    def create_formatted_parser(self, inline_strings):
+        field_idx = 0
+        format_str = '<'
+        unpackers = []
+
+        if not self.validate_format():
+            return None
+
+        for field_data_idx in range(0, len(self.field_data)):
+            # Ensure fields from our json formats and internal field data stay consistent
+            field_data = self.field_data[field_data_idx]
+            field_format = self.data_format[field_data_idx]
+
+            field_size = field_data[1]
+            field_count = field_data[2]
+
+            # The final field needs special handling because of padding
+            # concerns. For formatted data, always presume that the format
+            # (json) file has the correct length.
+            if field_data_idx == len(self.field_data) - 1:
+                field_count = min(field_count, field_format.elements)
+
+            for sub_idx in range(0, field_count):
+                # String format fields get converted to something Struct module
+                # understands. Depending on the DB2 file type, customized
+                # string parsing may be neeedd
+                if field_format.data_type == 'S':
+                    # No offset map, translate 'S' based on the DB2 field
+                    # length to an unsigned Byte, Short, or Integer.
+                    if not inline_strings:
+                        if field_size == 1:
+                            format_str += field_format.data_type.replace('S', 'B')
+                        elif field_size == 2:
+                            format_str += field_format.data_type.replace('S', 'H')
+                        elif field_size >= 3:
+                            format_str += field_format.data_type.replace('S', 'I')
+                    # Offset map, create an inline string parser (StringUnpacker)
+                    else:
+                        logging.debug('Inline string field (name=%s, pos=%d [%d]), end previous parser',
+                            field_format.base_name(), field_idx, field_data_idx)
+                        if len(format_str) > 1:
+                            unpackers.append((field_size == 3, struct.Struct(format_str)))
+                            format_str = '<'
+                        unpackers.append((field_size == 3, StringUnpacker(field_size)))
+                # Normal (unsigned) byte/short/int/float field, apply to Struct parser as-is
+                else:
+                    format_str += field_format.data_type
+
+                field_idx += 1
+
+                # 3-byte fields ends the current Struct parser and start a new
+                # one. Struct does not support 24bit ints, so we need to parse
+                # a 32bit one, mask away the excess and adjust parser offset.
+                # Indicate 24bitness as the first element of the tuple (the
+                # True value).
+                if field_size == 3 and len(format_str) > 1:
+                    logging.debug('Unpacker has a 3-byte field (name=%s pos=%d): terminating (%s) and beginning a new unpacker',
+                        field_format.base_name(), field_idx, format_str)
+                    unpackers.append((True, struct.Struct(format_str)))
+                    format_str = '<'
+
+        if len(format_str) > 1:
+            unpackers.append((self.field_data[-1][1] == 3, struct.Struct(format_str)))
+
+        logging.debug('Unpacking plan for %s: %s',
+            self.full_name(),
+            ', '.join(['%s (len=%d, i24=%s)' % (u.format.decode('utf-8'), u.size, i24) for i24, u in unpackers]))
+
+        # One parser unpackers don't need to go through a function, can just do
+        # the parsing in one go through a lambda function. Multi-parsers require state to be kept.
+        if len(unpackers) == 1:
+            return lambda data, ro, rs: list(unpackers[0][1].unpack_from(data, ro))
+        else:
+            return lambda data, ro, rs: _do_parse(unpackers, data, ro, rs)
 
     def n_expanded_fields(self):
         return sum([ fd[2] for fd in self.field_data ])
@@ -171,7 +482,7 @@ class DBCParserBase:
         self.magic = self.data[:4]
 
         if not self.is_magic():
-            logging.error('Invalid data file format %s', self.data[:4].decode('utf-8'))
+            logging.error('%s: Invalid data file format %s', self.class_name(), self.data[:4].decode('utf-8'))
             return False
 
         self.parse_offset += 4
@@ -220,71 +531,6 @@ class DBCParserBase:
 
             field_offset += self.field_data[-1][1]
 
-    def validate_data_model(self):
-        unpacker = None
-        # Sanity check the data
-        try:
-            unpacker = self.fmt.parser(self.class_name())
-        except Exception as e:
-            # We did not find a parser for the file, so then we need to figure
-            # out if we can output it anyhow in some reduced form, since some
-            # DBC versions are like that
-            if not self.raw_outputtable():
-                logging.error("Unable to parse %s: %s", self.full_name(), e)
-                return False
-
-        # Build auxilary structures to parse raw data out of the DBC file
-        self.build_field_data()
-        self.build_parser()
-
-        if not unpacker:
-            return True
-
-        # Check that at the end of the day, we have a sensible record length
-        if not self.raw_outputtable() and unpacker.size > self.parsed_record_size():
-            logging.error("Record size mismatch for %s, expected %u, format has %u",
-                    self.class_name(), self.record_size, unpacker.size)
-            return False
-
-        # Validate our json format file against the data we get from the file
-        if not self.is_wch():
-            str_base_incorrect = '[%03d/%03d] incorrect size for "%s" json-fmt="%s" dbc-length=%d json-length=%s file=%s'
-            fields = self.fmt.fields(self.class_name())
-            types = self.fmt.types(self.class_name())
-            fidx = 0
-            # Loop through all field data, validating each data type field (in
-            # WDB4/5 header) against the json format's field type. String
-            # fields are currently not validated as they can technically be of
-            # any length.
-            for fdidx in range(0, len(self.field_data)):
-                fd = self.field_data[fdidx]
-                for subidx in range(0, fd[2]):
-                    # Since the WDB files may have padding, we may actually go
-                    # past the number of json-format fields we have, so break
-                    # out early in that case.
-                    if fidx == len(fields):
-                        break
-
-                    if types[fidx] in ['I', 'i', 'f'] and fd[1] < 3:
-                        logging.warn(str_base_incorrect, fdidx, fidx, fields[fidx], types[fidx], fd[1], '3+', self.full_name())
-                    elif types[fidx] in ['H', 'h'] and fd[1] != 2:
-                        logging.warn(str_base_incorrect, fdidx, fidx, fields[fidx], types[fidx], fd[1], '2', self.full_name())
-                    elif types[fidx] in ['B', 'b'] and fd[1] != 1:
-                        logging.warn(str_base_incorrect, fdidx, fidx, fields[fidx], types[fidx], fd[1], '1', self.full_name())
-                    else:
-                        logging.debug('[%03d/%03d] field length ok for "%s" json-fmt="%s" dbc-length=%d',
-                            fdidx, fidx, fields[fidx], types[fidx], fd[1])
-                    fidx += 1
-
-        # Figure out the position of the id column. This may be none if WDB4/5
-        # and id_block_offset > 0
-        if not self.options.raw:
-            fields = self.fmt.fields(self.class_name())
-            for idx in range(0, len(fields)):
-                if fields[idx] == 'id':
-                    self.id_data = self.field_data[idx]
-                    break
-
         return True
 
     def open(self):
@@ -298,8 +544,21 @@ class DBCParserBase:
         if not self.parse_header():
             return False
 
-        if not self.validate_data_model():
+        # Build auxilary structures to parse raw data out of the DBC file
+        if not self.build_field_data():
             return False
+
+        # Build a parser out of field data (+ file format), if this succeeds things are looking ok
+        if not self.build_parser():
+            return False
+
+        # Figure out the position of the id column. This may be none if WDB4/5
+        # and id_block_offset > 0
+        if not self.options.raw:
+            for idx in range(0, len(self.data_format)):
+                if self.data_format[idx].base_name() == 'id':
+                    self.id_data = self.field_data[idx]
+                    break
 
         # After headers begins data, always
         self.data_offset = self.parse_offset
@@ -325,11 +584,11 @@ class DBCParserBase:
     def find_record_offset(self, id_):
         unpacker = None
         if self.id_data[1] == 1:
-            unpacker = struct.Struct('B')
+            unpacker = _BYTE
         elif self.id_data[1] == 2:
-            unpacker = struct.Struct('H')
+            unpacker = _SHORT
         elif self.id_data[1] >= 3:
-            unpacker = struct.Struct('I')
+            unpacker = _INT32
 
         for record_id in range(0, self.n_records()):
             offset = self.data_offset + self.record_size * record_id + self.id_data[0]
@@ -349,133 +608,45 @@ class DBCParserBase:
         return -1, self.data_offset + record_id * self.record_size, self.record_size
 
     def get_record(self, offset, size):
-        return self.record_parser(offset, size)
+        return self.record_parser(self.data, offset, size)
 
     def find(self, id_):
         dbc_id, record_offset, record_size = self.find_record_offset(id_)
 
         if record_offset > 0:
-            return dbc_id, self.record_parser(record_offset, record_size)
+            return dbc_id, self.record_parser(self.data, record_offset, record_size)
         else:
             return 0, tuple()
 
-class InlineStringRecordParser:
-    # Presume that string fields are always bunched up togeher
-    def __init__(self, parser):
-        self.parser = parser
-        self.unpackers = []
-        self.string_field_offset = 0
-        self.n_string_fields = 0
-        self.n_pad_fields = 0
-        try:
-            self.types = self.parser.fmt.types(self.parser.class_name())
-            self.n_string_fields = sum([field == 'S' for field in self.types])
-        except:
-            logging.error('Inline-string based file %s requires formatting information', self.parser.class_name())
-            sys.exit(1)
+# Proxy string unpacker for inlined strings. The size of the most recent parse
+# operation is stored in the size variable
+class StringUnpacker:
+    def __init__(self, default_field_size):
+        # set the default field size to the DB2 field size, it will be wrong
+        # but will work in terms of the header computation sanity checks
+        self.size = default_field_size
 
-        data_fmt = field_names = None
-        if not self.parser.options.raw:
-            data_fmt = self.parser.fmt.types(self.parser.class_name())
-            field_names = self.parser.fmt.fields(self.parser.class_name())
-        # Need to build a two-split custom parser here
-        format_str = '<'
-        format_idx = 0
-        n_bytes = 0
-        for field_idx in range(0, len(self.parser.field_data)):
-            # Don't parse past the record length
-            if n_bytes == self.parser.record_size:
-                break
+    # Mimick Struct interface, unpack_from simply returns the offset as the
+    # single value for the unpack operation. Additionally, unpack_from sets the
+    # size of the field by seeking the first null-byte in the inline string +
+    # 1. If the field is empty, the inline string field size will be 1,
+    # regardless of what the db2 field format value claims.
+    def unpack_from(self, data, offset):
+        # Find first \x00 byte
+        pos = data.find(b'\x00', offset)
+        self.size = (pos - offset) + 1
 
-            field_data = self.parser.field_data[field_idx]
-            type_idx = min(format_idx, data_fmt and len(data_fmt) - 1 or format_idx)
-            field_size = field_data[1]
-            for sub_idx in range(0, field_data[2]):
-                n_bytes += field_size
-                # Don't parse past the record length
-                if n_bytes == self.parser.record_size:
-                    break
+        # Inline strings with first character 0 denotes disabled field
+        if data[offset] == 0:
+            return (0,)
+        else:
+            return (offset,)
 
-                if data_fmt and data_fmt[type_idx] == 'S':
-                    logging.debug('Unpacker has a inlined string field (name=%s pos=%d): terminating (%s), skipping all consecutive strings, and beginning a new unpacker',
-                        field_names[type_idx], field_idx, format_str)
-                    self.unpackers.append((False, struct.Struct(format_str)))
-                    self.string_field_offset = self.unpackers[-1][1].size
-                    format_str = '<'
-                    format_idx += 1
+    def __getattribute__(self, attr):
+        if attr == 'format':
+            return b'I' # Always pretend to be an unsigned integer (offset into file)
 
-                    while data_fmt[type_idx + 1] == 'S':
-                        format_idx += 1
-                        type_idx += 1
-                        field_idx += 1
-                    continue
-
-                # Padding fields need to be skipped here, and filled with dummy
-                # data on parsing. This way, our data model will not break on
-                # outputting (# of fields, # of data will stay consistent)
-                if data_fmt and 'x' in data_fmt[type_idx]:
-                    logging.debug('Skipping padding field (name=%s pos=%d) of type "%s"', field_names[type_idx], field_idx, data_fmt[type_idx])
-                    format_idx += 1
-                    type_idx += 1
-                    field_idx += 1
-                    self.n_pad_fields += 1
-                    continue
-
-                if field_size == 1:
-                    format_str += data_fmt and data_fmt[type_idx] or 'b'
-                elif field_size == 2:
-                    format_str += data_fmt and data_fmt[type_idx] or 'h'
-                elif field_size >= 3:
-                    format_str += data_fmt and data_fmt[type_idx].replace('S', 'I') or 'i'
-                format_idx += 1
-
-                if field_size == 3:
-                    if not self.options.raw:
-                        logging.debug('Unpacker has a 3-byte field (name=%s pos=%d): terminating (%s) and beginning a new unpacker',
-                            field_names[type_idx], field_idx, format_str)
-                    else:
-                        logging.debug('Unpacker has a 3-byte field (pos=%d): terminating (%s) and beginning a new unpacker',
-                            field_idx, format_str)
-                    unpackers.append((True, struct.Struct(format_str)))
-                    format_str = '<'
-
-        if len(format_str) > 1:
-            self.unpackers.append((self.parser.field_data[-1][1] == 3, struct.Struct(format_str)))
-
-        logging.debug('Unpacking plan: %s', ', '.join(['%s (len=%d)' % (u.format.decode('utf-8'), u.size) for _, u in self.unpackers]))
-
-    def __call__(self, offset, size):
-        full_data = []
-        field_offset = 0
-        parsed_string_fields = 0
-
-        for int24, unpacker in self.unpackers:
-            full_data += unpacker.unpack_from(self.parser.data, offset + field_offset)
-            field_offset += unpacker.size
-
-            # String fields begin
-            if field_offset == self.string_field_offset:
-                while parsed_string_fields < self.n_string_fields:
-                    if self.parser.data[offset + field_offset] != 0:
-                        end = self.parser.data.find(b'\x00', offset + field_offset, offset + size)
-                        full_data.append(offset + field_offset)
-                        if self.parser.data[end + 4] == 0:
-                            field_offset = end - offset + 1
-                        else:
-                            field_offset = end - offset + 4
-                    else:
-                        full_data.append(0)
-                        field_offset += 4
-
-                    parsed_string_fields += 1
-
-                # Append pad fields with zeros to fill up to correct length
-                full_data += [ 0, ] * self.n_pad_fields
-
-            if int24:
-                full_data[-1] &= 0xFFFFFF
-
-        return full_data
+        return super().__getattribute__(attr)
 
 class LegionWDBParser(DBCParserBase):
     def __init__(self, options, fname):
@@ -487,11 +658,14 @@ class LegionWDBParser(DBCParserBase):
 
         self.id_table = []
 
+    def use_inline_strings(self):
+        return self.has_offset_map()
+
     def has_offset_map(self):
-        return self.flags & X_OFFSET_MAP
+        return (self.flags & X_OFFSET_MAP) == X_OFFSET_MAP
 
     def has_id_block(self):
-        return self.flags & X_ID_BLOCK
+        return (self.flags & X_ID_BLOCK) == X_ID_BLOCK
 
     def n_cloned_records(self):
         return self.clone_segment_size // _CLONE.size
@@ -501,13 +675,6 @@ class LegionWDBParser(DBCParserBase):
             return len(self.id_table)
         else:
             return self.records
-
-    # Inline strings need some (very heavy) custom parsing
-    def build_parser(self):
-        if self.has_offset_map():
-            self.record_parser = InlineStringRecordParser(self)
-        else:
-            super().build_parser()
 
     # Can search through WDB4/5 files if there's an id block, or if we can find
     # an ID from the formatted data
@@ -742,15 +909,8 @@ class WDB5Parser(LegionWDBParser):
     def n_fields(self):
         return sum([fd[2] for fd in self.field_data])
 
-    # This is the padded record size, meaning 3 byte fields are padded to 4 bytes
     def parsed_record_size(self):
-        return sum([(fd[1] == 3 and 4 or fd[1]) * fd[2] for fd in self.field_data])
-
-    def validate_data_model(self):
-        if not super().validate_data_model():
-            return False
-
-        return True
+        return len(self.unpackers) and (self.unpackers[-1][2] + self.unpackers[-1][1].size) or 0
 
     def __str__(self):
         s = super().__str__()
@@ -767,6 +927,174 @@ class WDB5Parser(LegionWDBParser):
             s += '\nField data: %s' % ', '.join(fields)
 
         return s
+
+class WDB6RecordParser:
+    def __init__(self, parser, static_parser):
+        self.parser = parser
+        self.record_parser = static_parser
+        self.fields = self.parser.fmt.objs(self.parser.class_name(), True)
+
+        if not self.parser.id_index:
+            raise AttributeError
+
+        self.id_index = 0
+        for i in range(0, len(self.fields)):
+            if i == self.parser.id_index:
+                break
+
+            self.id_index += self.fields[i].elements
+
+    def __call__(self, file_data, offset, size):
+        data = self.record_parser(file_data, offset, size)
+        idx = 0
+        for i in range(0, len(self.fields)):
+            value = self.parser.get_field_value(i, data[self.id_index])
+            if idx < len(data):
+                if value != None:
+                    data[idx] = value
+            else:
+                if value != None:
+                    data.append(value)
+                else:
+                    data.append(0)
+
+            idx += self.fields[i].elements
+
+        return data
+
+class WDB6Parser(WDB5Parser):
+    def is_magic(self): return self.magic == b'WDB6'
+
+    def __init__(self, options, fname):
+        super().__init__(options, fname)
+
+        self.field_block_offset = 0
+        self.field_blocks = []
+
+    def get_field_value(self, field_index, id_):
+        if len(self.field_blocks) < field_index:
+            return None
+
+        offset = self.field_blocks[field_index]['values'].get(id_, 0)
+        if offset == 0:
+            return None
+
+        return self.field_blocks[field_index]['parser'].unpack_from(self.data, offset)[0]
+
+    def build_parser(self):
+        # Always create a default parser
+        if not super().build_parser():
+            return False
+
+        # With field blocks, we need a significantly different parser to spit
+        # out raw data, so instantiate a wrapper class to do the stitching of
+        # data together
+        if self.field_block_offset > 0:
+            self.record_parser = WDB6RecordParser(self, self.record_parser)
+
+        return True
+
+    def parse_header(self):
+        if not super().parse_header():
+            return False
+
+        self.n_real_fields, self.field_block_size = _DB_HEADER_3.unpack_from(self.data, self.parse_offset)
+        self.parse_offset += _DB_HEADER_3.size
+
+        # Setup offsets into file, first string block, skip field data information of WDB5 files
+        if self.string_block_size > 2:
+            self.string_block_offset = self.parse_offset + self.records * self.record_size
+            self.string_block_offset += self.fields * 4
+
+        # Has ID block, note that ID-block needs to skip the field data information on WDB5 files
+        if self.has_id_block():
+            self.id_block_offset = self.parse_offset + self.records * self.record_size + self.string_block_size
+            self.id_block_offset += self.fields * 4
+
+        # Offset map contains offset into file, record size entries in a sparse structure
+        if self.has_offset_map():
+            self.offset_map_offset = self.string_block_size
+            self.string_block_offset = 0
+            if self.has_id_block():
+                self.id_block_offset = self.string_block_size + ((self.last_id - self.first_id) + 1) * _ITEMRECORD.size
+
+        # Has clone block
+        if self.clone_segment_size > 0:
+            self.clone_block_offset = self.id_block_offset + self.records * _ID.size
+
+        # Has WDB6 specific field block segment, for now it seems it's the
+        # final block of the file, this may change though
+        if self.field_block_size > 0:
+            self.field_block_offset = len(self.data) - self.field_block_size
+
+        return True
+
+    def parse_field_block(self):
+        if self.field_block_size == 0:
+            return True
+
+        # Field block starts with a 4 byte field (could be 2x 2 bytes too or
+        # anything else that sums to 4 bytes) indicating the number of field
+        # blocks
+        offset = self.field_block_offset
+        n_blocks = struct.unpack_from(u'I', self.data, offset)[0]
+        offset += 4
+
+        self.field_blocks = [ {} for i in range(0, n_blocks) ]
+
+        id_parser = struct.Struct('I')
+
+        # Then, each field block follows, record the data into self.field_blocks for later use
+        # The data recorded includes the number of entries, and a dictionary of
+        # id, offset pairs that allow the parser to access the data of the
+        # field for the (dbc) id record
+        index = 0
+        while index < n_blocks:
+            # First comes a block header that contains at least the number of
+            # values, and (possibly?) a type of the block (e.g., int/float etc)
+            n_values, type_ = _WDB6_BLOCK_HEADER.unpack_from(self.data, offset)
+            offset += _WDB6_BLOCK_HEADER.size
+
+            self.field_blocks[index] = {
+                'type': type_,
+                'values': {}
+            }
+
+            if type_ == 3:
+                self.field_blocks[index]['parser'] = struct.Struct('f')
+            elif type_ == 4:
+                self.field_blocks[index]['parser'] = struct.Struct('i')
+
+            # Then scan through the values to record pointers to data
+            value_index = 0
+            while value_index < n_values:
+                # Only grab the ID for now, other option is to parse the data already here ..
+                id_ = id_parser.unpack_from(self.data, offset)[0]
+                self.field_blocks[index]['values'][id_] = offset + id_parser.size
+
+                offset += id_parser.size + 4
+                value_index += 1
+
+            index += 1
+
+        return True
+
+    def fields_str(self):
+        fields = super().fields_str()
+
+        fields.append('n_real_fields=%u' % self.n_real_fields)
+        fields.append('field_block_size=%u' % self.field_block_size)
+
+        return fields
+
+    def open(self):
+        if not super().open():
+            return False
+
+        if not self.parse_field_block():
+            return False
+
+        return True
 
 class LegionWCHParser(LegionWDBParser):
     # For some peculiar reason, some WCH files are completely alien, compared
@@ -836,6 +1164,12 @@ class LegionWCHParser(LegionWDBParser):
     def is_wch(self):
         return True
 
+    # Inherit field data from the WDB parser
+    def build_field_data(self):
+        self.field_data = self.wdb_parser.field_data
+
+        return True
+
     # WCH files may need a specialized parser building if the parent WDB file
     # does not use an ID block. If ID block is used, the corresponding WCH file
     # will also have dynamic width fields. As an interesting side note, the WCF
@@ -843,9 +1177,9 @@ class LegionWCHParser(LegionWDBParser):
     def build_parser(self):
         if self.class_name() in self.__override_dbcs__:
             logging.debug('==NOTE== Overridden DBC: Expanding all record fields to 4 bytes ==NOTE==')
-            self.build_parser_wch5()
+            return self.build_parser_wch5()
         else:
-            super().build_parser()
+            return super().build_parser()
 
     # Override record parsing completely by making a unpacker that generates 4
     # byte fields for the record. This is necessary in the case of SpellEffect
@@ -878,13 +1212,15 @@ class LegionWCHParser(LegionWDBParser):
         if len(format_str) > 1:
             self.unpackers.append((0xFFFFFFFF, struct.Struct(format_str), field_offset))
 
-        logging.debug('Unpacking plan for %s: %s',
+        logging.debug('Unpacking plan for static data of %s: %s',
             self.full_name(),
             ', '.join(['%s (len=%d, offset=%d)' % (u.format.decode('utf-8'), u.size, o) for _, u, o in self.unpackers]))
         if len(self.unpackers) == 1:
             self.record_parser = lambda ro, rs: self.unpackers[0][1].unpack_from(self.data, ro)
         else:
             self.record_parser = self.__do_parse
+
+        return True
 
 class WCH7Parser(LegionWCHParser):
     def is_magic(self): return self.magic == b'WCH7' or self.magic == b'WCH8'

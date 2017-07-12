@@ -69,6 +69,8 @@ const char* item_quality_string       ( int item_quality );
 const char* specialization_string     ( specialization_e spec );
 const char* movement_direction_string( movement_direction_e );
 const char* class_id_string( player_e type );
+const char* spec_string_no_class( const player_t&p );
+const char* retarget_event_string     ( retarget_event_e );
 
 uint32_t    school_type_component     ( school_e s_type, school_e c_type );
 bool is_match_slot( slot_e slot );
@@ -120,7 +122,6 @@ item_subclass_weapon translate_weapon( weapon_e weapon );
 profession_e translate_profession_id( int skill_id );
 bool socket_gem_match( item_socket_color socket, item_socket_color gem );
 double crit_multiplier( meta_gem_e gem );
-std::string& glyph_name( std::string& n );
 
 std::vector<std::string> string_split( const std::string& str, const std::string& delim );
 size_t string_split_allow_quotes( std::vector<std::string>& results, const std::string& str, const char* delim );
@@ -167,6 +168,7 @@ double approx_sqrt( double X );
 void tolower( std::string& str );
 
 void tokenize( std::string& name );
+std::string tokenize_fn( std::string name );
 std::string inverse_tokenize( const std::string& name );
 
 bool is_number( const std::string& s );

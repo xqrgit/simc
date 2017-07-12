@@ -243,7 +243,6 @@ SC_OptionsTab::SC_OptionsTab( SC_MainWindow* parent ) :
   connect( choice.fight_variance,     SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
   connect( choice.iterations,         SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
   connect( choice.num_target,         SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
-  connect( choice.player_skill,       SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
   connect( choice.plots_points,       SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
   connect( choice.plots_step,         SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
   connect( choice.plots_target_error, SIGNAL( currentIndexChanged( int ) ), this, SLOT( _optionsChanged() ) );
@@ -305,9 +304,8 @@ void SC_OptionsTab::createGlobalsTab()
   globalsLayout_left -> addRow( tr(    "Iterations" ),      choice.iterations = addValidatorToComboBox( 1, INT_MAX, createChoice( 9, "1", "100", "1000", "10000", "25000", "50000", "100000", "250000", "500000" ) ) );
   globalsLayout_left -> addRow( tr(  "Length (sec)" ),    choice.fight_length = addValidatorToComboBox( 1, 10000, createChoice( 10, "100", "150", "200", "250", "300", "350", "400", "450", "500", "600" ) ) );
   globalsLayout_left -> addRow( tr(   "Vary Length %" ),  choice.fight_variance = addValidatorToComboBox( 0, 100, createChoice( 6, "0", "10", "20", "30", "40", "50" ) ) );
-  globalsLayout_left -> addRow( tr(   "Fight Style" ),     choice.fight_style = createChoice( 7, "Patchwerk", "HecticAddCleave", "HelterSkelter", "Ultraxion", "LightMovement", "HeavyMovement", "Beastlord" ) );
+  globalsLayout_left -> addRow( tr(   "Fight Style" ),     choice.fight_style = createChoice( 8, "Patchwerk", "HecticAddCleave", "HelterSkelter", "Ultraxion", "LightMovement", "HeavyMovement", "Beastlord", "CastingPatchwerk" ) );
   globalsLayout_left -> addRow( tr( "Challenge Mode" ), choice.challenge_mode = createChoice( 2, "Disabled", "Enabled" ) );
-  globalsLayout_left -> addRow( tr(  "Player Skill" ),    choice.player_skill = createChoice( 4, "Elite", "Good", "Average", "Ouch! Fire is hot!" ) );
   globalsLayout_left -> addRow( tr( "Default Role" ),     choice.default_role = createChoice( 4, "Auto", "DPS", "Heal", "Tank" ) );
   globalsLayout_left -> addRow( tr( "GUI Localization" ),     choice.gui_localization = createChoice( 5, "auto", "en", "de", "zh", "it" ) );
 
@@ -655,14 +653,13 @@ void SC_OptionsTab::decodeOptions()
   QSettings settings;
   settings.beginGroup( "options" );
   load_setting( settings, "version", choice.version );
-  load_setting( settings, "target_error", choice.target_error, "N/A" );
+  load_setting( settings, "target_error", choice.target_error, "Auto" );
   load_setting( settings, "iterations", choice.iterations, "10000" );
   load_setting( settings, "fight_length", choice.fight_length, "300" ); //More representative of raid fights nowadays. - Collision 9/3/2016
   load_setting( settings, "fight_variance", choice.fight_variance, "20" );
   load_setting( settings, "fight_style", choice.fight_style );
   load_setting( settings, "target_race", choice.target_race );
   load_setting( settings, "num_target", choice.num_target );
-  load_setting( settings, "player_skill", choice.player_skill );
   load_setting( settings, "threads", choice.threads, QString::number( QThread::idealThreadCount() ) );
   load_setting( settings, "process_priority", choice.process_priority, "Low" );
   load_setting( settings, "auto_save", choice.auto_save, "No" );
@@ -752,7 +749,6 @@ void SC_OptionsTab::encodeOptions()
   settings.setValue( "fight_style", choice.fight_style -> currentText() );
   settings.setValue( "target_race", choice.target_race -> currentText() );
   settings.setValue( "num_target", choice.num_target -> currentText() );
-  settings.setValue( "player_skill", choice.player_skill -> currentText() );
   settings.setValue( "threads", choice.threads -> currentText() );
   settings.setValue( "process_priority", choice.process_priority -> currentText() );
   settings.setValue( "auto_save", choice.auto_save -> currentText() );
@@ -840,7 +836,10 @@ void SC_OptionsTab::createToolTips()
                                         "    beginning %3s into the fight" ).arg( 4 ).arg( 10 ).arg( 10 ) + "\n" +
                                     tr( "Beastlord:\n"
                                         "    Random Movement, Advanced Positioning,\n"
-                                        "    Frequent Single and Wave Add Spawns" ) );
+                                        "    Frequent Single and Wave Add Spawns" ) + "\n" +
+                                    tr( "CastingPatchwerk: Tank-n-Spank\n"
+                                        "    Boss considered always casting\n"
+                                        "    (to test interrupt procs on cooldown)" ) );
 
   choice.target_race -> setToolTip( tr( "Race of the target and any adds." ) );
 
@@ -853,8 +852,6 @@ void SC_OptionsTab::createToolTips()
   choice.pvp_crit -> setToolTip( tr( "In PVP, critical strikes deal 150% damage instead of 200%.\n"
                                      "Enabling this option will set target level to max player level." ) );
 
-  choice.player_skill -> setToolTip( tr( "Elite:       No mistakes.  No cheating either." ) + "\n" +
-                                     tr( "Fire-is-Hot: Frequent DoT-clipping and skipping high-priority abilities." ) );
 
   choice.threads -> setToolTip( tr( "Match the number of CPUs for optimal performance.\n"
                                     "Most modern desktops have at least two CPU cores." ) );
@@ -866,7 +863,7 @@ void SC_OptionsTab::createToolTips()
 
   choice.armory_region -> setToolTip( tr( "United States, Europe, Taiwan, China, Korea" ) );
 
-  choice.armory_spec -> setToolTip( tr( "Controls which Talent/Glyph specification is used when importing profiles from the Armory." ) );
+  choice.armory_spec -> setToolTip( tr( "Controls which Talent specification is used when importing profiles from the Armory." ) );
 
   choice.gui_localization -> setToolTip( tr( "Controls the GUI display language." ) );
 
@@ -1024,11 +1021,6 @@ QString SC_OptionsTab::get_globalSettings()
     }
   }
   // end target spawning
-
-  options += "default_skill=";
-  const char *skill[] = { "1.0", "0.95", "0.85", "0.75" };
-  options += skill[ choice.player_skill->currentIndex() ];
-  options += "\n";
 
   options += "optimal_raid=0\n";
 
@@ -1217,8 +1209,7 @@ QString SC_OptionsTab::mergeOptions()
   options += "\n"
       "### End simulateText ###\n";
 
-  if ( choice.num_target -> currentIndex() >= 1 )
-    options += "desired_targets=" + QString::number( choice.num_target -> currentIndex() + 1 ) + "\n";
+  options += "desired_targets=" + QString::number( choice.num_target -> currentIndex() + 1 ) + "\n";
 
   options += "### Begin overrides ###\n";
   options += mainWindow -> overridesText -> toPlainText();

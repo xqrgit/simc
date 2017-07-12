@@ -1,20 +1,4 @@
-# T19H
-# Tier 19 Heroic
-# * Ilvl Cap: 865
-# * Artifact Rank Cap: 26
-# * 3 Relics with max ilevel of 865
-# * Mythic+ gear is permitted up to the item level cap.
-# * No items from Violet Hold (unless 840 ilevel)
-# * No items from World Bosses / World Quests / BoEs
-# * No items from Nighthold (including set bonuses)
-# * No Legendaries
-# * No Random Gems (ie. Bonus RNG Gem Slots)
-# * No Tertiary Stats
-# * No Ranked Gear (ie. Warforged/Titanforged)
-# * No Hardcoded Stats (generally if an item gives wrong stats: either bonus_id is wrong, either the item no longer exists in-game)
-# * It is recommended to use enchant name (ex : ",enchant=binding_of_mastery") rather than id/hardcoded stats.
-
-hunter="Hunter_BM_T19H"
+hunter="Hunter_Beast_Mastery_T19H"
 level=110
 race=orc
 role=attack
@@ -38,14 +22,14 @@ finger2=shadowruby_band,id=136713,bonus_id=669/1703,gems=150mastery,enchant=bind
 trinket1=chrono_shard,id=137419,bonus_id=1517/3418
 trinket2=bloodthirsty_instinct,id=139329,bonus_id=1487/1805
 main_hand=titanstrike,id=128861,ilevel=894,gem_id=137365/133768/137543
-save=Hunter_BM_T19H.simc
+save=Hunter_Beast_Mastery_T19H.simc
 
-hunter="Hunter_MM_T19H"
+hunter="Hunter_Marksmanship_T19H"
 level=110
 race=troll
 role=attack
 position=ranged_back
-talents=1103011
+talents=1303013
 artifact=55:0:0:0:0:307:1:308:1:310:1:311:1:312:3:313:3:314:2:315:3:318:3:319:3:320:3:321:1:322:1:1337:1
 spec=marksmanship
 
@@ -64,14 +48,14 @@ finger2=shadowruby_band,id=136713,bonus_id=669/1703,gems=150mastery,enchant=bind
 trinket1=naraxas_spiked_tongue,id=137349,bonus_id=1517/3418
 trinket2=bloodthirsty_instinct,id=139329,bonus_id=1487/1805
 main_hand=thasdorah_legacy_of_the_windrunners,id=128826,ilevel=894,gem_id=137313/136718/137381
-save=Hunter_MM_T19H.simc
+save=Hunter_Marksmanship_T19H.simc
 
-hunter="Hunter_SV_T19H"
+hunter="Hunter_Survival_T19H"
 level=110
 race=orc
 role=attack
 position=ranged_back
-talents=2302022
+talents=3101031
 artifact=34:0:0:0:0:1068:1:1070:2:1072:3:1073:3:1074:3:1075:3:1076:3:1077:3:1079:1:1080:1:1082:1:1083:1:1084:1:1338:1
 spec=survival
 
@@ -90,4 +74,4 @@ finger2=grubby_silver_ring,id=139236,bonus_id=1487/1805,enchant=binding_of_versa
 trinket1=tirathons_betrayal,id=137537,bonus_id=1517/3418
 trinket2=bloodthirsty_instinct,id=139329,bonus_id=1487/1805
 main_hand=talonclaw,id=128808,ilevel=894,gem_id=137550/137408/137350
-save=Hunter_SV_T19H.simc
+save=Hunter_Survival_T19H.simc

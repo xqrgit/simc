@@ -563,8 +563,7 @@ item_socket_color enchant::initialize_relic( item_t&                    item,
         // so we need to map the blizzard's indexing system to our own (seemingly arbitrary indexing
         // based on development cycle).
         auto internal_power_index = std::distance( powers.begin(), power_it );
-        item.player -> artifact.points[ internal_power_index ].second += data.ench_amount[ i ];
-        item.player -> artifact.n_points += data.ench_amount[ i ];
+        item.player -> artifact.add_bonus_rank( internal_power_index, data.ench_amount[ i ] );
         break;
       }
       default:
@@ -572,11 +571,17 @@ item_socket_color enchant::initialize_relic( item_t&                    item,
     }
   }
 
+  // The relic ilevel (after applying item bonuses) is stored in the parsed base item data.
+  // User has overriden relic item level with the relic_ilevel option on the item.
+  if ( item.parsed.relic_ilevel[ relic_idx ] > 0 )
+  {
+    relic.parsed.data.level = item.parsed.relic_ilevel[ relic_idx ];
+  }
+
   // Then, use a (seemingly) hard-coded curve point to figure out a scaled value for the +item level
   // increase
   double ilevel_value = item_database::curve_point_value( item.player -> dbc,
-      RELIC_ILEVEL_BONUS_CURVE,
-      relic.parsed.data.level );
+      RELIC_ILEVEL_BONUS_CURVE, relic.parsed.data.level );
 
   if ( item.player -> sim -> debug )
   {

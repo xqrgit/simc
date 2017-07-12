@@ -223,7 +223,7 @@ void dot_t::decrement( int stacks = 1 )
 }
 
 // For copying a DoT to a different target.
-void dot_t::copy( player_t* other_target, dot_copy_e copy_type )
+void dot_t::copy( player_t* other_target, dot_copy_e copy_type ) const
 {
   if ( target == other_target )
     return;
@@ -349,7 +349,7 @@ void dot_t::copy( player_t* other_target, dot_copy_e copy_type )
 }
 
 // For duplicating a DoT (creating a 2nd instance) on one target.
-void dot_t::copy( dot_t* other_dot )
+void dot_t::copy( dot_t* other_dot ) const
 {
   // Shared initialize for the target dot state, independent of the copying
   // method
@@ -895,7 +895,7 @@ bool dot_t::channel_interrupt()
   assert( ticking );
   if ( current_action->channeled )
   {
-    bool interrupt = current_action->interrupt;
+    bool interrupt = current_action->option.interrupt;
     if ( !interrupt )
     {
       expr_t* expr = current_action->interrupt_if_expr;
@@ -915,10 +915,10 @@ bool dot_t::channel_interrupt()
         sim.out_debug.printf(
             "Dot interrupt check: gcd_ready=%d action_available=%d.", gcd_ready,
             action_available );
-      if ( ( gcd_ready || current_action->interrupt_immediate ) &&
+      if ( ( gcd_ready || current_action->option.interrupt_immediate ) &&
            action_available )
       {
-        if ( current_action->interrupt_immediate )
+        if ( current_action->option.interrupt_immediate )
         {
           current_action->interrupt_immediate_occurred = true;
         }
@@ -1011,7 +1011,7 @@ void dot_t::schedule_tick()
     // Response: "Have to"?  It might be good to recast early - since the GCD
     // will end sooner. Depends on the situation. -ersimont
     expr_t* expr = current_action->early_chain_if_expr;
-    if ( ( ( current_action->chain && current_tick + 1 == num_ticks ) ||
+    if ( ( ( current_action->option.chain && current_tick + 1 == num_ticks ) ||
            ( current_tick > 0 && expr && expr->success() &&
              current_action->player->gcd_ready <= sim.current_time() ) ) &&
          current_action->ready() && !is_higher_priority_action_available() )
@@ -1146,25 +1146,62 @@ void dot_t::check_tick_zero()
   }
 }
 
-bool dot_t::is_higher_priority_action_available() const
+bool do_find_higher_priority_action( const action_priority_list_t::parent_t& parent )
 {
-  assert( current_action->action_list );
-  action_priority_list_t* active_actions = current_action->action_list;
-  for ( action_t* a : active_actions->foreground_action_list )
+  auto apl = std::get<0>( parent );
+  auto idx = std::get<1>( parent );
+
+  for ( size_t i = 0; i < apl -> foreground_action_list.size() && i < idx; ++i )
   {
-    if ( a == current_action)
+    auto a = apl -> foreground_action_list[ i ];
+
+    if ( a -> ready() )
+    {
+      return true;
+    }
+  }
+
+  return range::find_if( apl -> parents, []( const action_priority_list_t::parent_t& p ) {
+    return do_find_higher_priority_action( p );
+  } ) != apl -> parents.end();
+}
+
+bool do_find_higher_priority_action( action_t* ca )
+{
+  auto apl = ca -> action_list;
+
+  for ( action_t* a : apl -> foreground_action_list )
+  {
+    if ( a == ca )
     {
       break;
     }
     // FIXME Why not interrupt a channel for the same spell higher up the action
     // list?
     // if ( a -> id == current_action -> id ) continue;
-    if ( a->ready() )
+    if ( a -> ready() )
     {
       return true;
     }
   }
-  return false;
+
+  if ( ca -> interrupt_global )
+  {
+    return range::find_if( apl -> parents, []( const action_priority_list_t::parent_t& p ) {
+      return do_find_higher_priority_action( p );
+    } ) != apl -> parents.end();
+  }
+  else
+  {
+    return false;
+  }
+}
+
+bool dot_t::is_higher_priority_action_available() const
+{
+  assert( current_action->action_list );
+
+  return do_find_higher_priority_action( current_action );
 }
 
 void dot_t::adjust( double coefficient )
